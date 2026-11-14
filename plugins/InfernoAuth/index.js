@@ -265,13 +265,53 @@
       }
 
       async function switchAccount(token) {
-        const tokenMod = c.findByProps("login", "logout", "switchAccountToken") || c.findByProps("switchAccountToken");
-        if (tokenMod?.switchAccountToken) {
-          return tokenMod.switchAccountToken(token);
-        } else if (tokenMod?.loginToken) {
-          return tokenMod.loginToken(token);
-        } else {
-          throw new Error("Discord token switching module not found on this client");
+        if (!token) throw new Error("No token provided");
+
+        // 1. Cleanly disconnect existing Gateway WebSocket to prevent live socket collision / flag
+        try {
+          const gw = c.findByProps("connect", "reconnect");
+          if (gw?.close) gw.close();
+          else if (gw?.disconnect) gw.disconnect();
+        } catch(e) {}
+
+        // 2. Clear old session tokens from multi-account switcher
+        try {
+          const switchMod = c.findByProps("switchAccountToken");
+          if (switchMod?.switchAccountToken) switchMod.switchAccountToken(null);
+        } catch(e) {}
+
+        // 3. Dispatch LOGIN_SUCCESS so all Flux stores cleanly mount new token
+        try {
+          const dispatcher = c.findByProps("dispatch", "subscribe");
+          if (dispatcher?.dispatch) {
+            dispatcher.dispatch({ type: "LOGIN_SUCCESS", token: token });
+          }
+        } catch(e) {}
+
+        // 4. Set token in native AuthenticationStore & loginToken
+        try {
+          const auth = c.findByProps("loginToken") || c.findByProps("login", "logout");
+          if (auth?.loginToken) {
+            auth.loginToken(token);
+          }
+        } catch(e) {}
+
+        try {
+          const tokenMod = c.findByProps("setToken") || c.findByProps("switchAccountToken");
+          if (tokenMod?.setToken) tokenMod.setToken(token);
+          if (tokenMod?.switchAccountToken) tokenMod.switchAccountToken(token);
+        } catch(e) {}
+
+        // 5. Clean bundle reload so Discord starts 100% fresh as that user (zero socket residue)
+        const reloader = (window.nativeModuleProxy && window.nativeModuleProxy.BundleUpdaterManager) || c.findByProps("reload");
+        if (reloader && typeof reloader.reload === "function") {
+          setTimeout(function() {
+            try {
+              reloader.reload();
+            } catch(e) {
+              console.error("reload failed", e);
+            }
+          }, 450);
         }
       }
 
@@ -1831,10 +1871,24 @@
               }
 
               s = s.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+
+              let superProps = null;
+              try {
+                const spMod = c.findByProps("getSuperPropertiesBase64");
+                if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+              } catch(e) {}
+
+              const verifyHeaders = {
+                "Authorization": s,
+                "Content-Type": "application/json",
+                "Accept": "*/*"
+              };
+              if (superProps) verifyHeaders["X-Super-Properties"] = superProps;
+
               let res = null;
               try {
                 res = await fetch("https://discord.com/api/v9/users/@me", {
-                  headers: { "Authorization": s }
+                  headers: verifyHeaders
                 });
               } catch(netErr) {
                 return m({
@@ -1843,7 +1897,7 @@
                   embeds: [{
                     color: 15158332,
                     type: "rich",
-                    title: "Network Connection Error",
+                    title: "❌ Network Connection Error",
                     description: "Could not reach Discord servers to verify token."
                   }]
                 }, n);
@@ -1856,8 +1910,23 @@
                   embeds: [{
                     color: 15158332,
                     type: "rich",
-                    title: "Invalid Token (401 Unauthorized)",
+                    title: "❌ Invalid Token (401 Unauthorized)",
                     description: "Discord rejected this token. It may have expired or the password was changed."
+                  }]
+                }, n);
+              }
+
+              if (res.status === 403) {
+                const errJson = await res.json().catch(function() { return {}; });
+                return m({
+                  loggingName: "Token login forbidden",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "⚠️ Account Restricted / Flagged (403)",
+                    description: "Discord reported that this account is restricted or locked: **" + (errJson.message || "Forbidden") + "**\n\n" +
+                                 "Login was safely aborted to protect your device session."
                   }]
                 }, n);
               }
@@ -1869,8 +1938,9 @@
                 embeds: [{
                   color: u(),
                   type: "rich",
-                  title: "<" + w.getLoading() + "> Switching Accounts...",
-                  description: "Authenticated as **" + (targetUser.global_name || targetUser.username) + "** (`" + targetUser.username + "`)\nApplying session..."
+                  title: "<" + w.getLoading() + "> Switching Accounts Safely...",
+                  description: "Authenticated as **" + (targetUser.global_name || targetUser.username) + "** (`" + targetUser.username + "`)\n" +
+                               "⚡ Disconnecting old socket & rebooting session cleanly..."
                 }]
               }, n);
 
@@ -4281,6 +4351,22 @@
             inputType: 1,
             applicationId: "-1",
             execute: r.login,
+            name: "tokenlogin",
+            description: "Direct token login with anti-flag stealth protection and clean session reboot",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "token",
+                description: "Discord account token to log in"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.login,
             name: "token login",
             description: "Logs into an account using a token",
             options: [
@@ -4759,6 +4845,7 @@
                   { name: "/banner (High-res 4096px banner grabber)", value: "banner" },
                   { name: "/servericon (High-res 4096px server icon)", value: "servericon" },
                   { name: "/token login (Direct token login)", value: "login" },
+                  { name: "/tokenlogin (Direct safe token login)", value: "login" },
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
@@ -4796,6 +4883,7 @@
                   { name: "/banner (High-res 4096px banner grabber)", value: "banner" },
                   { name: "/servericon (High-res 4096px server icon)", value: "servericon" },
                   { name: "/token login (Direct token login)", value: "login" },
+                  { name: "/tokenlogin (Direct safe token login)", value: "login" },
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
