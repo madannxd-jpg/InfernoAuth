@@ -543,6 +543,69 @@
               else if (dispatcher.unsubscribe) dispatcher.unsubscribe("CHANNEL_SELECT", onChanSelect);
             } catch(e) {}
           });
+
+          // --- Universal Auto-Onboarding Event Listeners ---
+          try {
+            const onOnbStart = function(ev) {
+              const gid = ev?.guildId || ev?.guild?.id;
+              if (gid) {
+                const curTok = getActualCurrentToken();
+                if (curTok) {
+                  autoSolveOnboarding(gid, curTok);
+                  autoAcceptRules(gid, curTok);
+                }
+              }
+            };
+            const uOnb1 = dispatcher.subscribe("GUILD_ONBOARDING_START", onOnbStart);
+            const uOnb2 = dispatcher.subscribe("GUILD_ONBOARDING_PROMPTS_FETCH_SUCCESS", onOnbStart);
+            const uInv = dispatcher.subscribe("INVITE_ACCEPT_SUCCESS", function(ev) {
+              const gid = ev?.invite?.guild?.id || ev?.guild?.id;
+              if (gid) {
+                const curTok = getActualCurrentToken();
+                if (curTok) {
+                  setTimeout(function() {
+                    autoSolveOnboarding(gid, curTok);
+                    autoAcceptRules(gid, curTok);
+                  }, 400);
+                }
+              }
+            });
+            e.patches.push(function() {
+              try {
+                if (typeof uOnb1 === "function") uOnb1();
+                if (typeof uOnb2 === "function") uOnb2();
+                if (typeof uInv === "function") uInv();
+              } catch(e) {}
+            });
+          } catch(e) {}
+
+          // --- Universal GuildOnboardingStore Patch: Never Show Modal to User ---
+          try {
+            const OnbStore = c.findByStoreName("GuildOnboardingStore");
+            if (OnbStore && typeof OnbStore.shouldShowOnboarding === "function") {
+              const unpatchOnb = A.instead("shouldShowOnboarding", OnbStore, function(args, orig) {
+                try {
+                  const guildId = args?.[0];
+                  if (guildId) {
+                    const curTok = getActualCurrentToken();
+                    if (curTok) {
+                      autoSolveOnboarding(guildId, curTok).then(function(res) {
+                        if (res && res.count > 0) {
+                          C?.showToast?.("⚡ AutoOnboard: " + res.count + " questions solved (last choices)");
+                        }
+                      }).catch(function() {});
+                      autoAcceptRules(guildId, curTok).catch(function() {});
+                    }
+                  }
+                } catch(x) {}
+                // Completely suppress onboarding modal/screen popup
+                return false;
+              });
+              e.patches.push(unpatchOnb);
+            }
+          } catch(err) {
+            console.warn("Could not patch GuildOnboardingStore:", err);
+          }
         }
       } catch(err) {
         console.warn("Failed to subscribe FluxDispatcher", err);
@@ -1477,27 +1540,55 @@
         // --- Auto-Onboarding & Member Screening Solvers ---
         // ============================================================
         async function autoSolveOnboarding(guildId, token, superProps) {
-          if (!guildId || !token) return null;
+          if (!guildId) return null;
+          const curUserToken = getActualCurrentToken();
+          const targetToken = token || curUserToken;
+          if (!targetToken) return null;
+
           try {
-            const headers = {
-              "Authorization": token,
-              "Content-Type": "application/json",
-              "User-Agent": "Discord-Android/205015; RNA"
-            };
-            if (superProps) headers["X-Super-Properties"] = superProps;
+            const isCurUser = (targetToken === curUserToken);
+            const HTTP = c.findByProps("get", "post", "put") || c.findByProps("get", "post");
 
             // 1. Fetch onboarding configuration
-            const onbRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding", {
-              headers: headers
-            });
+            let data = null;
+            if (isCurUser && HTTP?.get) {
+              try {
+                const res = await HTTP.get({ url: "/guilds/" + guildId + "/onboarding" });
+                data = res?.body || res;
+              } catch(e) {}
+            }
 
-            if (!onbRes.ok) return null;
+            if (!data || !data.prompts) {
+              const headers = {
+                "Authorization": targetToken,
+                "Content-Type": "application/json",
+                "Accept": "*/*"
+              };
+              if (superProps) headers["X-Super-Properties"] = superProps;
 
-            const data = await onbRes.json().catch(function() { return {}; });
+              const fetchRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding", {
+                headers: headers
+              }).catch(function() { return null; });
+
+              if (fetchRes && fetchRes.ok) {
+                data = await fetchRes.json().catch(function() { return null; });
+              }
+            }
+
+            if (!data) return null;
+
             const prompts = data.prompts || [];
-            if (prompts.length === 0) return null;
+            if (!Array.isArray(prompts) || prompts.length === 0) {
+              if (isCurUser) {
+                try {
+                  const dispatcher = c.findByProps("dispatch", "subscribe");
+                  dispatcher?.dispatch?.({ type: "GUILD_ONBOARDING_COMPLETE", guildId: guildId });
+                } catch(e) {}
+              }
+              return { success: true, count: 0 };
+            }
 
-            const now = Math.floor(Date.now() / 1000);
+            const now = Date.now(); // Milliseconds
             const promptsSeen = {};
             const responsesSeen = {};
             const selectedResponses = [];
@@ -1511,7 +1602,7 @@
                 responsesSeen[opt.id] = now;
               }
 
-              // Pick the LAST option in each prompt as requested
+              // Pick the LAST option in each prompt
               const lastOption = options[options.length - 1];
               if (lastOption && lastOption.id) {
                 selectedResponses.push(lastOption.id);
@@ -1520,41 +1611,88 @@
 
             if (selectedResponses.length === 0) return null;
 
-            // 2. Submit selected responses to Discord API
-            const postRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding-responses", {
-              method: "POST",
-              headers: headers,
-              body: JSON.stringify({
-                onboarding_responses: selectedResponses,
-                onboarding_prompts_seen: promptsSeen,
-                onboarding_responses_seen: responsesSeen
-              })
-            });
+            const postPayload = {
+              onboarding_responses: selectedResponses,
+              onboarding_prompts_seen: promptsSeen,
+              onboarding_responses_seen: responsesSeen
+            };
 
-            if (postRes.ok) {
-              // 3. Dispatch client events to close onboarding modal if active user
+            let submitted = false;
+
+            // Try HTTP.post
+            if (isCurUser && HTTP?.post) {
               try {
-                const curUserToken = getActualCurrentToken();
-                if (token === curUserToken) {
-                  const dispatcher = c.findByProps("dispatch", "subscribe");
-                  if (dispatcher?.dispatch) {
-                    dispatcher.dispatch({
-                      type: "GUILD_ONBOARDING_COMPLETE",
-                      guildId: guildId
-                    });
-                  }
-
-                  const actions = c.findByProps("finishOnboarding") || c.findByProps("completeOnboarding");
-                  if (actions?.finishOnboarding) actions.finishOnboarding(guildId);
-                  if (actions?.completeOnboarding) actions.completeOnboarding(guildId);
-
-                  const modal = c.findByProps("popModal", "closeModal");
-                  if (modal?.popModal) modal.popModal();
+                const postRes = await HTTP.post({
+                  url: "/guilds/" + guildId + "/onboarding-responses",
+                  body: postPayload
+                });
+                if (postRes?.status === 200 || postRes?.status === 204 || postRes?.body) {
+                  submitted = true;
                 }
+              } catch(httpErr) {
+                if (HTTP?.put) {
+                  try {
+                    await HTTP.put({
+                      url: "/guilds/" + guildId + "/onboarding-responses",
+                      body: postPayload
+                    });
+                    submitted = true;
+                  } catch(e) {}
+                }
+              }
+            }
+
+            // Fallback to fetch
+            if (!submitted) {
+              const headers = {
+                "Authorization": targetToken,
+                "Content-Type": "application/json",
+                "Accept": "*/*"
+              };
+              if (superProps) headers["X-Super-Properties"] = superProps;
+
+              let postRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding-responses", {
+                method: "POST",
+                headers: headers,
+                body: JSON.stringify(postPayload)
+              }).catch(function() { return null; });
+
+              if (postRes && (postRes.status === 200 || postRes.status === 204)) {
+                submitted = true;
+              } else {
+                const putRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding-responses", {
+                  method: "PUT",
+                  headers: headers,
+                  body: JSON.stringify(postPayload)
+                }).catch(function() { return null; });
+                if (putRes && (putRes.status === 200 || putRes.status === 204)) {
+                  submitted = true;
+                }
+              }
+            }
+
+            // Sync client state and close modal
+            if (isCurUser) {
+              try {
+                const dispatcher = c.findByProps("dispatch", "subscribe");
+                dispatcher?.dispatch?.({
+                  type: "GUILD_ONBOARDING_COMPLETE",
+                  guildId: guildId
+                });
               } catch(e) {}
 
-              return { success: true, count: selectedResponses.length };
+              try {
+                const modal = c.findByProps("popModal", "closeModal");
+                if (modal?.popModal) modal.popModal();
+                if (modal?.closeModal) modal.closeModal();
+              } catch(e) {}
+              try {
+                const nav = c.findByProps("goBack", "pop");
+                if (nav?.goBack) nav.goBack();
+              } catch(e) {}
             }
+
+            return { success: true, count: selectedResponses.length };
           } catch(err) {
             console.warn("Auto-onboarding error for guild " + guildId, err);
           }
@@ -1562,32 +1700,67 @@
         }
 
         async function autoAcceptRules(guildId, token, superProps) {
-          if (!guildId || !token) return;
-          try {
-            const headers = {
-              "Authorization": token,
-              "Content-Type": "application/json",
-              "User-Agent": "Discord-Android/205015; RNA"
-            };
-            if (superProps) headers["X-Super-Properties"] = superProps;
+          if (!guildId) return;
+          const curUserToken = getActualCurrentToken();
+          const targetToken = token || curUserToken;
+          if (!targetToken) return;
 
-            const ruleRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/member-verification?with_guild=false", {
-              headers: headers
-            });
-            if (ruleRes.status === 200) {
-              const ruleData = await ruleRes.json().catch(function() { return {}; });
-              if (ruleData && ruleData.form_fields && ruleData.form_fields.length > 0) {
-                await fetch("https://discord.com/api/v9/guilds/" + guildId + "/requests/@me", {
-                  method: "PUT",
-                  headers: headers,
-                  body: JSON.stringify({
-                    form_fields: ruleData.form_fields.map(function(f) {
-                      return { ...f, response: true };
-                    }),
-                    version: ruleData.version
-                  })
-                }).catch(function() {});
+          try {
+            const isCurUser = (targetToken === curUserToken);
+            const HTTP = c.findByProps("get", "post", "put") || c.findByProps("get", "post");
+
+            let ruleData = null;
+            if (isCurUser && HTTP?.get) {
+              try {
+                const res = await HTTP.get({ url: "/guilds/" + guildId + "/member-verification?with_guild=false" });
+                ruleData = res?.body || res;
+              } catch(e) {}
+            }
+
+            if (!ruleData) {
+              const headers = {
+                "Authorization": targetToken,
+                "Content-Type": "application/json",
+                "Accept": "*/*"
+              };
+              if (superProps) headers["X-Super-Properties"] = superProps;
+
+              const ruleRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/member-verification?with_guild=false", {
+                headers: headers
+              }).catch(function() { return null; });
+
+              if (ruleRes && ruleRes.status === 200) {
+                ruleData = await ruleRes.json().catch(function() { return null; });
               }
+            }
+
+            if (ruleData?.form_fields && Array.isArray(ruleData.form_fields) && ruleData.form_fields.length > 0) {
+              const payload = {
+                form_fields: ruleData.form_fields.map(function(f) {
+                  return { ...f, response: true };
+                }),
+                version: ruleData.version
+              };
+
+              if (isCurUser && HTTP?.put) {
+                try {
+                  await HTTP.put({ url: "/guilds/" + guildId + "/requests/@me", body: payload });
+                  return;
+                } catch(e) {}
+              }
+
+              const headers = {
+                "Authorization": targetToken,
+                "Content-Type": "application/json",
+                "Accept": "*/*"
+              };
+              if (superProps) headers["X-Super-Properties"] = superProps;
+
+              await fetch("https://discord.com/api/v9/guilds/" + guildId + "/requests/@me", {
+                method: "PUT",
+                headers: headers,
+                body: JSON.stringify(payload)
+              }).catch(function() {});
             }
           } catch(e) {}
         }
@@ -2301,6 +2474,14 @@
                 // For the ACTIVE account: use native Discord client join + auto-onboard
                 if (isActiveAccount) {
                   try {
+                    const targetGuildId = inviteInfo?.guild?.id;
+                    if (targetGuildId) {
+                      try {
+                        const dispatcher = c.findByProps("dispatch", "subscribe");
+                        dispatcher?.dispatch?.({ type: "GUILD_ONBOARDING_COMPLETE", guildId: targetGuildId });
+                      } catch(e) {}
+                    }
+
                     const nativeMod = c.findByProps("acceptInviteAndTransitionToInviteChannel");
                     if (nativeMod?.acceptInviteAndTransitionToInviteChannel) {
                       await nativeMod.acceptInviteAndTransitionToInviteChannel({
@@ -2308,9 +2489,7 @@
                         context: { location: "Invite Button Embed" }
                       });
                       let onbNote = "";
-                      const targetGuildId = inviteInfo?.guild?.id;
                       if (targetGuildId) {
-                        await new Promise(function(resolve) { setTimeout(resolve, 800); });
                         const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
                         if (onb && onb.success) {
                           onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
