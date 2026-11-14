@@ -2455,21 +2455,25 @@
                   color: u(),
                   type: "rich",
                   title: "<" + w.getLoading() + "> Joining " + serverName + "...",
-                  description: "Processing **" + targetList.length + "** account(s) sequentially with rate-limit protection..."
+                  description: "Processing **" + targetList.length + "** account(s) in parallel with instant auto-onboarding..."
                 }]
               }, n);
 
-              const results = [];
+              const joinResultsMap = new Map();
 
-              for (let i = 0; i < targetList.length; i++) {
-                const item = targetList[i];
+              if (targetList.length > 1) {
+                C?.showToast?.("⚡ Joining " + serverName + " across " + targetList.length + " accounts in parallel...");
+              }
+
+              let superProps = "";
+              try {
+                const spMod = c.findByProps("getSuperPropertiesBase64");
+                if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+              } catch(x) {}
+
+              // Parallel execution across all target accounts
+              await Promise.all(targetList.map(async function(item) {
                 const isActiveAccount = (item.token === curToken);
-
-                let superProps = "";
-                try {
-                  const spMod = c.findByProps("getSuperPropertiesBase64");
-                  if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
-                } catch(x) {}
 
                 // For the ACTIVE account: use native Discord client join + auto-onboard
                 if (isActiveAccount) {
@@ -2492,24 +2496,24 @@
                       if (targetGuildId) {
                         const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
                         if (onb && onb.success) {
-                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options)*";
                         }
                         await autoAcceptRules(targetGuildId, item.token, superProps);
                       }
-                      results.push("• " + item.name + ": **Joined successfully! (Native)**" + onbNote);
-                      continue;
+                      joinResultsMap.set(item.token, "• " + item.name + ": **Joined successfully! (Native)**" + onbNote);
+                      return;
                     }
                   } catch(nativeErr) {
                     console.warn("Native invite join failed, trying REST for active account", nativeErr);
                   }
                 }
 
-                // For ALT accounts (or fallback): use REST API with proper Discord Android headers + delays
+                // For ALT accounts (or REST fallback): REST API join + auto-onboard in parallel
                 try {
                   const joinHeaders = {
                     "Authorization": item.token,
                     "Content-Type": "application/json",
-                    "User-Agent": "Discord-Android/205015; RNA"
+                    "Accept": "*/*"
                   };
                   if (superProps) joinHeaders["X-Super-Properties"] = superProps;
 
@@ -2527,47 +2531,45 @@
                     if (targetGuildId) {
                       const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
                       if (onb && onb.success) {
-                        onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                        onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options)*";
                       }
                       await autoAcceptRules(targetGuildId, item.token, superProps);
                     }
-                    results.push("• " + item.name + ": **Joined successfully!**" + onbNote);
+                    joinResultsMap.set(item.token, "• " + item.name + ": **Joined successfully!**" + onbNote);
                   } else if (joinRes.status === 400) {
                     const errJson = joinJson;
                     if (errJson.captcha_key || errJson.captcha_sitekey) {
-                      results.push("• " + item.name + ": \u26a0\ufe0f *Requires CAPTCHA (verify manually)*");
+                      joinResultsMap.set(item.token, "• " + item.name + ": \u26a0\ufe0f *Requires CAPTCHA (verify manually)*");
                     } else if (errJson.message && /already/i.test(errJson.message)) {
                       let onbNote = "";
                       if (targetGuildId) {
                         const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
                         if (onb && onb.success) {
-                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options)*";
                         }
                         await autoAcceptRules(targetGuildId, item.token, superProps);
                       }
-                      results.push("• " + item.name + ": *Already a member*" + onbNote);
+                      joinResultsMap.set(item.token, "• " + item.name + ": *Already a member*" + onbNote);
                     } else {
-                      results.push("• " + item.name + ": *Failed — " + (errJson.message || "Bad Request") + "*");
+                      joinResultsMap.set(item.token, "• " + item.name + ": *Failed — " + (errJson.message || "Bad Request") + "*");
                     }
                   } else if (joinRes.status === 401) {
-                    results.push("• " + item.name + ": *Token invalid or expired (401)*");
+                    joinResultsMap.set(item.token, "• " + item.name + ": *Token invalid or expired (401)*");
                   } else if (joinRes.status === 403) {
-                    results.push("• " + item.name + ": *Access denied (403)*");
+                    joinResultsMap.set(item.token, "• " + item.name + ": *Access denied (403)*");
                   } else if (joinRes.status === 429) {
-                    results.push("• " + item.name + ": *Rate limited — stopping batch*");
-                    break;
+                    joinResultsMap.set(item.token, "• " + item.name + ": *Rate limited (429)*");
                   } else {
-                    results.push("• " + item.name + ": *HTTP " + joinRes.status + "*");
+                    joinResultsMap.set(item.token, "• " + item.name + ": *HTTP " + joinRes.status + "*");
                   }
                 } catch(netErr) {
-                  results.push("• " + item.name + ": *Network error: " + netErr.message + "*");
+                  joinResultsMap.set(item.token, "• " + item.name + ": *Network error: " + netErr.message + "*");
                 }
+              }));
 
-                // 3-second delay between alt joins to avoid rate limits / flags
-                if (i < targetList.length - 1) {
-                  await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-                }
-              }
+              const results = targetList.map(function(item) {
+                return joinResultsMap.get(item.token) || ("• " + item.name + ": *Failed to join*");
+              });
 
               return m({
                 loggingName: "Join completed",
@@ -2575,9 +2577,9 @@
                 embeds: [{
                   color: 3066993,
                   type: "rich",
-                  title: "Join Results: " + serverName,
+                  title: "⚡ Join Results: " + serverName,
                   description: results.join("\n"),
-                  footer: { text: "Scope: " + (scopeAll ? "All Accounts (Active + Alts)" : "Active Account Only") + " • Safe Join" }
+                  footer: { text: "Scope: " + (scopeAll ? "All Accounts (Active + Alts) • Parallel Join & Onboard" : "Active Account Only") }
                 }]
               }, n);
 
@@ -4113,7 +4115,7 @@
                        "**Features:**\n" +
                        "• Automatically completes onboarding prompts (chooses last option on every question)\n" +
                        "• Automatically accepts Membership Screening rules\n" +
-                       "• Anti-Rate-Limit: 3-second delay between batch alt joins.";
+                       "• Fast Parallel Execution: All accounts join simultaneously in parallel and complete onboarding in parallel!";
               } else if (cmdChoice === "onboard") {
                 title = "/onboard — Community Onboarding Auto-Solver";
                 desc = "**Automatically answers all pending community onboarding questions on the current server by selecting the last option for each question.**\n\n" +

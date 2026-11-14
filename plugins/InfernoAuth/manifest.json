@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: /sendmsg with multi-count & parallel alt dispatch, /joinserver & /token join with Auto-Onboarding & Screen Suppressor, Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: /joinserver & /token join with Parallel Multi-Account Join & Auto-Onboarding, /sendmsg with multi-count & parallel dispatch, Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "742f460fa6ad002f04e4a97c19578ec495caa5885e5b1f670350b1de0c29bbbf"
+  "hash": "f8bdb599a1235a847297f0eedc0a62e886d81706c245386fdad98fc3bfb4e2f1"
 }
