@@ -1,0 +1,2558 @@
+(function(h, T, S, c, M, B, A, C) {
+  "use strict";
+
+  // --- Helper: Command Wrapper ---
+  function y(e, i, a) {
+    if (!e.name || !e?.description) throw new Error("No name or description in command: " + e?.name);
+    e.displayName ??= i?.names?.[a] ?? e.name;
+    e.displayDescription ??= i?.names?.[a] ?? e.description;
+    if (e.options) {
+      if (!Array.isArray(e.options)) throw new Error("Options is not an array");
+      for (var r = 0; r < e.options.length; r++) {
+        const t = e.options[r];
+        if (!t?.name || !t?.description) throw new Error("No name/description in option " + r);
+        t.displayName ??= i?.options?.[r]?.names?.[a] ?? t.name;
+        t.displayDescription ??= i?.options?.[r]?.descriptions?.[a] ?? t.description;
+        if (t?.choices) {
+          if (!Array.isArray(t.choices)) throw new Error("Choices is not an array");
+          for (var o = 0; o < t.choices.length; o++) {
+            const n = t.choices[o];
+            if (!n?.name) throw new Error("No name of choice in option " + r);
+            n.displayName ??= i?.options?.[r]?.choices?.[o]?.names?.[a] ?? n.name;
+          }
+        }
+      }
+    }
+    return e;
+  }
+
+  // --- Helper: Message Sending ---
+  function P(e) {
+    const { metro: i } = e;
+    const { receiveMessage: a } = i.findByProps("sendMessage", "receiveMessage");
+    const { createBotMessage: r } = i.findByProps("createBotMessage");
+    const o = i.findByProps("BOT_AVATARS");
+    return function(t, n) {
+      if (t.channelId ??= i.findByStoreName("SelectedChannelStore").getChannelId(), [null, void 0].includes(t.channelId)) {
+        throw new Error("No channel id to receive the message into");
+      }
+      if (n !== void 0 && "author" in n && "avatar" in n.author && "avatarURL" in n.author) {
+        if (o && o.BOT_AVATARS) {
+          o.BOT_AVATARS[n.author.avatar] = n.author.avatarURL;
+        }
+        delete n.author.avatarURL;
+      }
+      let s = n === true ? t : r(t);
+      if (typeof n == "object") {
+        const mergeMod = e.metro.findByProps("merge");
+        s = mergeMod?.merge ? mergeMod.merge(s, n) : Object.assign({}, s, n);
+      }
+      a(t.channelId, s);
+      return s;
+    };
+  }
+
+  const w = {
+    loadingDiscordSpinner: "a:loading:1105495814073229393",
+    aol: "a:aol:1108834296359301161",
+    linuth: ":linuth:1110531631409811547",
+    fuckyoy: ":fuckyoy:1108360628302782564",
+    getLoading() { return Math.random() < 0.01 ? this.aol : this.loadingDiscordSpinner; },
+    getFailure() { return Math.random() < 0.01 ? this.fuckyoy : this.linuth; },
+    getSuccess() { return ""; }
+  };
+
+  const U = { command: "https://cdn.discordapp.com/attachments/1099116247364407337/1112129955053187203/command.png" };
+
+  const { meta: { resolveSemanticColor: E } } = c.findByProps("colors", "meta") || { meta: { resolveSemanticColor: () => "#5865F2" } };
+  const b = c.findByStoreName("ThemeStore");
+  const u = function() {
+    try {
+      return parseInt(E(b.theme, T.semanticColors?.BACKGROUND_SECONDARY || T.semanticColors?.BACKGROUND_BASE_LOWER).slice(1), 16);
+    } catch(err) {
+      return 5793266;
+    }
+  };
+
+  const p = { author: { username: "InfernoAuth", avatar: "command", avatarURL: U.command } };
+  let g;
+  function m() {
+    return window.sendMessage ? window.sendMessage(...arguments) : ((g || (g = P(vendetta))), g(...arguments));
+  }
+
+  // --- Plugin Definition ---
+  var I = {
+    meta: vendetta.plugin,
+    patches: [],
+    onUnload() {
+      this.patches.forEach(function(e) {
+        try { if (typeof e === "function") e(); } catch(err) {}
+      });
+      this.patches = [];
+    },
+    onLoad() {
+      var e = this;
+
+      // ============================================================
+      // --- Multi-Account Storage & Helpers ---
+      // ============================================================
+      function getStorage() {
+        try {
+          if (vendetta?.plugin?.storage) {
+            if (!Array.isArray(vendetta.plugin.storage.savedAccounts)) {
+              vendetta.plugin.storage.savedAccounts = [];
+            }
+            return vendetta.plugin.storage;
+          }
+        } catch(err) {}
+        return { savedAccounts: [] };
+      }
+
+      function getSavedAccounts() {
+        const st = getStorage();
+        return Array.isArray(st.savedAccounts) ? st.savedAccounts : [];
+      }
+
+      function saveAccount(acc) {
+        const st = getStorage();
+        let list = Array.isArray(st.savedAccounts) ? [...st.savedAccounts] : [];
+        const idx = list.findIndex(function(a) {
+          return a.id === acc.id || (a.token && a.token === acc.token);
+        });
+        if (idx !== -1) {
+          list[idx] = { ...list[idx], ...acc };
+        } else {
+          list.push(acc);
+        }
+        st.savedAccounts = list;
+      }
+
+      function removeAccountByQuery(query) {
+        const st = getStorage();
+        const list = Array.isArray(st.savedAccounts) ? [...st.savedAccounts] : [];
+        const num = parseInt(query, 10);
+        if (!isNaN(num) && num >= 1 && num <= list.length) {
+          const removed = list.splice(num - 1, 1)[0];
+          st.savedAccounts = list;
+          return removed;
+        }
+        const qLower = String(query).toLowerCase().trim();
+        const idx = list.findIndex(function(a) {
+          return (a.username && a.username.toLowerCase() === qLower) ||
+                 (a.name && a.name.toLowerCase() === qLower) ||
+                 (a.id && a.id === qLower) ||
+                 (a.globalName && a.globalName.toLowerCase() === qLower);
+        });
+        if (idx !== -1) {
+          const removed = list.splice(idx, 1)[0];
+          st.savedAccounts = list;
+          return removed;
+        }
+        return null;
+      }
+
+      function findAccountByQuery(query) {
+        const list = getSavedAccounts();
+        const num = parseInt(query, 10);
+        if (!isNaN(num) && num >= 1 && num <= list.length) {
+          return list[num - 1];
+        }
+        const qLower = String(query).toLowerCase().trim();
+        return list.find(function(a) {
+          return (a.username && a.username.toLowerCase() === qLower) ||
+                 (a.name && a.name.toLowerCase() === qLower) ||
+                 (a.id && a.id === qLower) ||
+                 (a.globalName && a.globalName.toLowerCase() === qLower);
+        });
+      }
+
+      async function switchAccount(token) {
+        const tokenMod = c.findByProps("login", "logout", "switchAccountToken") || c.findByProps("switchAccountToken");
+        if (tokenMod?.switchAccountToken) {
+          return tokenMod.switchAccountToken(token);
+        } else if (tokenMod?.loginToken) {
+          return tokenMod.loginToken(token);
+        } else {
+          throw new Error("Discord token switching module not found on this client");
+        }
+      }
+
+      // ============================================================
+      // --- Deleted Messages Tracking (Pre-Cache & Dispatch Intercept) ---
+      // ============================================================
+      const recentMessagesCache = new Map();
+      const channelDeletedMessages = new Map();
+      const MessageStore = c.findByStoreName("MessageStore");
+
+      function cacheRecentMessage(msg) {
+        if (!msg || !msg.id) return;
+        const author = msg.author || {};
+        let ts = msg.timestamp;
+        if (ts && typeof ts.toDate === "function") ts = ts.toDate();
+        else if (ts && typeof ts.toISOString === "function") ts = ts.toISOString();
+
+        recentMessagesCache.set(msg.id, {
+          id: msg.id,
+          channelId: msg.channel_id || msg.channelId,
+          content: typeof msg.content === "string" ? msg.content : "",
+          author: {
+            id: author.id || null,
+            username: author.username || "Unknown",
+            globalName: author.global_name || author.globalName || author.username || "Unknown"
+          },
+          timestamp: ts || new Date().toISOString(),
+          attachments: Array.isArray(msg.attachments)
+            ? msg.attachments.map(function(a) { return a.url || a.proxy_url || a.filename || ""; }).filter(Boolean)
+            : []
+        });
+
+        if (recentMessagesCache.size > 3000) {
+          const firstKey = recentMessagesCache.keys().next().value;
+          recentMessagesCache.delete(firstKey);
+        }
+      }
+
+      function cacheChannelMessages(chId) {
+        if (!chId || !MessageStore) return;
+        try {
+          const msgs = MessageStore.getMessages(chId);
+          if (!msgs) return;
+          const list = msgs._array || (typeof msgs.toArray === "function" ? msgs.toArray() : null) || (Array.isArray(msgs) ? msgs : null);
+          if (list && Array.isArray(list)) {
+            for (let i = 0; i < list.length; i++) {
+              cacheRecentMessage(list[i]);
+            }
+          } else if (typeof msgs.forEach === "function") {
+            msgs.forEach(function(m) { cacheRecentMessage(m); });
+          }
+        } catch(e) {}
+      }
+
+      function recordDeleted(channelId, cached, msgId) {
+        if (!channelId) return;
+        if (!channelDeletedMessages.has(channelId)) {
+          channelDeletedMessages.set(channelId, []);
+        }
+        const list = channelDeletedMessages.get(channelId);
+        if (list.some(function(m) { return m.id === msgId; })) return;
+
+        const now = new Date();
+        const deletedAt = now.toLocaleTimeString();
+        const deletedTimestamp = now.getTime();
+
+        let sentAt = "Unknown";
+        if (cached?.timestamp) {
+          try {
+            let ts = cached.timestamp;
+            if (ts && typeof ts.toDate === "function") ts = ts.toDate();
+            else if (ts && typeof ts.toISOString === "function") ts = ts.toISOString();
+            const d = new Date(ts);
+            sentAt = isNaN(d.getTime()) ? String(ts) : d.toLocaleTimeString();
+          } catch(e) {}
+        }
+
+        let text = cached?.content || "";
+        const attachments = cached?.attachments || [];
+        if (!text && attachments.length > 0) {
+          text = "(Attachment only)";
+        } else if (!text) {
+          text = cached ? "(Empty message)" : "(Deleted message not captured in recent cache)";
+        }
+
+        const record = {
+          id: msgId,
+          channelId: channelId,
+          author: cached?.author || { username: "Unknown User", globalName: "Unknown User", id: null },
+          content: text,
+          sentAt: sentAt,
+          deletedAt: deletedAt,
+          deletedTimestamp: deletedTimestamp,
+          attachments: attachments
+        };
+
+        list.unshift(record);
+        if (list.length > 100) {
+          list.pop();
+        }
+      }
+
+      // High-Priority Dispatch Interception: captures deleted messages BEFORE MessageStore removes them!
+      try {
+        const dispatcher = vendetta?.metro?.common?.FluxDispatcher || c.findByProps("dispatch", "subscribe");
+        if (dispatcher && typeof dispatcher.dispatch === "function") {
+          const unpatchDispatch = A.before("dispatch", dispatcher, function(args) {
+            try {
+              const event = args?.[0];
+              if (!event || !event.type) return args;
+
+              // Pre-cache newly loaded, created, or updated messages
+              if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
+                if (event.message) cacheRecentMessage(event.message);
+              } else if (event.type === "LOAD_MESSAGES_SUCCESS" && Array.isArray(event.messages)) {
+                event.messages.forEach(cacheRecentMessage);
+              } else if (event.type === "LOCAL_MESSAGES_LOADED" && Array.isArray(event.messages)) {
+                event.messages.forEach(cacheRecentMessage);
+              } else if (event.type === "CHANNEL_SELECT" && event.channelId) {
+                cacheChannelMessages(event.channelId);
+              }
+
+              // Intercept MESSAGE_DELETE before any store purges the message!
+              if (event.type === "MESSAGE_DELETE") {
+                const chId = event.channelId;
+                const msgId = event.id;
+                if (chId && msgId) {
+                  let cached = recentMessagesCache.get(msgId);
+                  if (!cached) {
+                    const raw = MessageStore?.getMessage?.(chId, msgId);
+                    if (raw) {
+                      cacheRecentMessage(raw);
+                      cached = recentMessagesCache.get(msgId);
+                    }
+                  }
+                  if (!cached) {
+                    cacheChannelMessages(chId);
+                    cached = recentMessagesCache.get(msgId);
+                  }
+                  recordDeleted(chId, cached, msgId);
+                }
+              } else if (event.type === "MESSAGE_DELETE_BULK") {
+                const chId = event.channelId;
+                if (chId && Array.isArray(event.ids)) {
+                  event.ids.forEach(function(msgId) {
+                    let cached = recentMessagesCache.get(msgId);
+                    if (!cached) {
+                      const raw = MessageStore?.getMessage?.(chId, msgId);
+                      if (raw) {
+                        cacheRecentMessage(raw);
+                        cached = recentMessagesCache.get(msgId);
+                      }
+                    }
+                    if (!cached) {
+                      cacheChannelMessages(chId);
+                      cached = recentMessagesCache.get(msgId);
+                    }
+                    recordDeleted(chId, cached, msgId);
+                  });
+                }
+              }
+            } catch(e) {}
+            return args;
+          });
+
+          e.patches.push(unpatchDispatch);
+
+          // Initial pre-caching for currently open channel
+          try {
+            const SelectedChannelStore = c.findByStoreName("SelectedChannelStore");
+            const activeCh = SelectedChannelStore?.getChannelId?.();
+            if (activeCh) cacheChannelMessages(activeCh);
+          } catch(e) {}
+
+          // Dual subscription fallback
+          const onMsgCreate = function(ev) {
+            try { if (ev?.message) cacheRecentMessage(ev.message); } catch(e) {}
+          };
+          const onMsgLoad = function(ev) {
+            try { if (Array.isArray(ev?.messages)) ev.messages.forEach(cacheRecentMessage); } catch(e) {}
+          };
+          const onChanSelect = function(ev) {
+            try { if (ev?.channelId) cacheChannelMessages(ev.channelId); } catch(e) {}
+          };
+
+          const u1 = dispatcher.subscribe("MESSAGE_CREATE", onMsgCreate);
+          const u2 = dispatcher.subscribe("LOAD_MESSAGES_SUCCESS", onMsgLoad);
+          const u3 = dispatcher.subscribe("CHANNEL_SELECT", onChanSelect);
+
+          e.patches.push(function() {
+            try {
+              if (typeof u1 === "function") u1();
+              else if (dispatcher.unsubscribe) dispatcher.unsubscribe("MESSAGE_CREATE", onMsgCreate);
+              if (typeof u2 === "function") u2();
+              else if (dispatcher.unsubscribe) dispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", onMsgLoad);
+              if (typeof u3 === "function") u3();
+              else if (dispatcher.unsubscribe) dispatcher.unsubscribe("CHANNEL_SELECT", onChanSelect);
+            } catch(e) {}
+          });
+        }
+      } catch(err) {
+        console.warn("Failed to subscribe FluxDispatcher", err);
+      }
+
+      // ============================================================
+      // --- Alert & Notification Helpers (Safe - No LegacyAlert) ---
+      // ============================================================
+      function showAlert(title, content) {
+        C?.showToast?.(title + ": " + content);
+      }
+
+      // ============================================================
+      // --- Login Screen UI (Persistent State & Focus Lock) ---
+      // ============================================================
+      try {
+        const React = vendetta?.metro?.common?.React || c.findByProps("createElement");
+        const RN = vendetta?.metro?.common?.ReactNative || c.findByProps("AppRegistry");
+        const AuthStore = c.findByStoreName("AuthenticationStore");
+
+        if (React && RN) {
+          // --- Direct Session Application with Bundle Reload ---
+          function executeDirectSwitch(token, userData) {
+            C?.showToast?.("Applying session...");
+
+            try {
+              const dispatcher = c.findByProps("dispatch", "subscribe");
+              if (dispatcher?.dispatch) {
+                dispatcher.dispatch({ type: "LOGIN_SUCCESS", token: token });
+              }
+            } catch(e) {
+              console.warn("LOGIN_SUCCESS dispatch failed", e);
+            }
+
+            try {
+              const auth = c.findByProps("loginToken") || c.findByProps("login", "logout");
+              if (auth?.loginToken) {
+                auth.loginToken(token);
+              }
+            } catch(e) {
+              console.warn("loginToken call failed", e);
+            }
+
+            try {
+              const tokenMod = c.findByProps("switchAccountToken");
+              if (tokenMod?.switchAccountToken) {
+                tokenMod.switchAccountToken(token);
+              }
+            } catch(e) {}
+
+            try {
+              const gateway = c.findByProps("connect", "reconnect");
+              if (gateway?.reconnect) {
+                gateway.reconnect();
+              }
+            } catch(e) {
+              console.warn("gateway reconnect failed", e);
+            }
+
+            const reloader = (window.nativeModuleProxy && window.nativeModuleProxy.BundleUpdaterManager) || c.findByProps("reload");
+            if (reloader && typeof reloader.reload === "function") {
+              setTimeout(function() {
+                try {
+                  reloader.reload();
+                } catch(e) {
+                  console.error("reload failed", e);
+                  C?.showToast?.("Please restart Discord manually to complete login.");
+                }
+              }, 500);
+            } else {
+              C?.showToast?.("Session applied! Please restart Discord if needed.");
+            }
+            return true;
+          }
+
+          // Persistent module-level state prevents collapsing when keyboard opens!
+          let isModalOpenGlobal = false;
+          let tokenTextGlobal = "";
+          let errorTextGlobal = "";
+          let isLoginLoadingGlobal = false;
+
+          // --- Centered Modal Token Login Component with Backdrop & Close Button ---
+          function TokenLoginSection() {
+            const [isModalOpen, setIsModalOpen] = React.useState(isModalOpenGlobal);
+            const [tokenText, setTokenText] = React.useState(tokenTextGlobal);
+            const [errorText, setErrorText] = React.useState(errorTextGlobal);
+            const [isLoading, setIsLoading] = React.useState(isLoginLoadingGlobal);
+
+            async function handlePasteClipboard() {
+              try {
+                const clipboard = vendetta?.metro?.common?.clipboard || B;
+                if (clipboard?.getString) {
+                  const val = await clipboard.getString();
+                  if (val) {
+                    const trimmed = val.trim();
+                    tokenTextGlobal = trimmed;
+                    setTokenText(trimmed);
+                    errorTextGlobal = "";
+                    setErrorText("");
+                  }
+                }
+              } catch(e) {}
+            }
+
+            async function handleLoginSubmit() {
+              const s = (tokenText || tokenTextGlobal || "").trim().replace(/^["'\s]+|["'\s]+$/g, "");
+              if (!s || s.split(".").length < 3 || s.length < 40) {
+                errorTextGlobal = "Invalid format. Token must be 3 dot-separated strings.";
+                setErrorText(errorTextGlobal);
+                return;
+              }
+
+              isLoginLoadingGlobal = true;
+              setIsLoading(true);
+              errorTextGlobal = "";
+              setErrorText("");
+              C?.showToast?.("Verifying token with Discord...");
+
+              try {
+                const res = await fetch("https://discord.com/api/v9/users/@me", {
+                  headers: { "Authorization": s }
+                });
+
+                if (res.status === 401) {
+                  isLoginLoadingGlobal = false;
+                  setIsLoading(false);
+                  errorTextGlobal = "Invalid token (401). Token expired or revoked.";
+                  setErrorText(errorTextGlobal);
+                  return;
+                }
+                if (res.status === 403) {
+                  isLoginLoadingGlobal = false;
+                  setIsLoading(false);
+                  errorTextGlobal = "Account restricted (403). Locked or verification required.";
+                  setErrorText(errorTextGlobal);
+                  return;
+                }
+                if (!res.ok) {
+                  isLoginLoadingGlobal = false;
+                  setIsLoading(false);
+                  errorTextGlobal = "Discord API returned error HTTP " + res.status;
+                  setErrorText(errorTextGlobal);
+                  return;
+                }
+
+                const userData = await res.json().catch(function() { return {}; });
+                C?.showToast?.("Logging into @" + (userData.username || "user") + "...");
+
+                saveAccount({
+                  id: userData.id,
+                  username: userData.username,
+                  globalName: userData.global_name || userData.username,
+                  token: s,
+                  avatar: userData.avatar,
+                  addedAt: Date.now()
+                });
+
+                isModalOpenGlobal = false;
+                setIsModalOpen(false);
+                setIsLoading(false);
+                executeDirectSwitch(s, userData);
+              } catch(err) {
+                isLoginLoadingGlobal = false;
+                setIsLoading(false);
+                errorTextGlobal = "Network error: " + (err.message || "Failed to reach Discord");
+                setErrorText(errorTextGlobal);
+              }
+            }
+
+            return React.createElement(
+              React.Fragment,
+              null,
+              // The main button on the login screen
+              React.createElement(
+                RN.Pressable,
+                {
+                  _isTokenBtn: true,
+                  onPress: function() {
+                    isModalOpenGlobal = true;
+                    setIsModalOpen(true);
+                    errorTextGlobal = "";
+                    setErrorText("");
+                  },
+                  style: {
+                    backgroundColor: "#5865F2",
+                    height: 44,
+                    borderRadius: 4,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginVertical: 4,
+                    width: "100%"
+                  }
+                },
+                React.createElement(
+                  RN.Text,
+                  {
+                    style: {
+                      color: "#FFFFFF",
+                      fontSize: 15,
+                      fontWeight: "600",
+                      letterSpacing: 0.2,
+                      textAlign: "center"
+                    }
+                  },
+                  "Log in with Token"
+                )
+              ),
+              // Centered Modal Window with Screen-Locking Backdrop
+              React.createElement(
+                RN.Modal,
+                {
+                  visible: isModalOpen,
+                  transparent: true,
+                  animationType: "fade",
+                  statusBarTranslucent: true,
+                  onRequestClose: function() {
+                    // Empty: never close on Android IME / keyboard events!
+                  }
+                },
+                React.createElement(
+                  RN.View,
+                  {
+                    style: {
+                      flex: 1,
+                      backgroundColor: "rgba(0, 0, 0, 0.75)",
+                      justifyContent: "center",
+                      alignItems: "center",
+                      padding: 20
+                    }
+                  },
+                  React.createElement(
+                    RN.View,
+                    {
+                      style: {
+                        width: "100%",
+                        maxWidth: 360,
+                        backgroundColor: "#2b2d31",
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: "#35373c",
+                        padding: 18,
+                        elevation: 12
+                      }
+                    },
+                    // Header Row: Title & Cross Button (✕)
+                    React.createElement(
+                      RN.View,
+                      {
+                        style: {
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 8
+                        }
+                      },
+                      React.createElement(
+                        RN.Text,
+                        {
+                          style: {
+                            color: "#FFFFFF",
+                            fontSize: 16,
+                            fontWeight: "700"
+                          }
+                        },
+                        "Log in with Token"
+                      ),
+                      React.createElement(
+                        RN.Pressable,
+                        {
+                          onPress: function() {
+                            isModalOpenGlobal = false;
+                            setIsModalOpen(false);
+                            errorTextGlobal = "";
+                            setErrorText("");
+                          },
+                          hitSlop: 10,
+                          style: {
+                            width: 30,
+                            height: 30,
+                            borderRadius: 15,
+                            backgroundColor: "#1e1f22",
+                            alignItems: "center",
+                            justifyContent: "center"
+                          }
+                        },
+                        React.createElement(
+                          RN.Text,
+                          {
+                            style: {
+                              color: "#b5bac1",
+                              fontSize: 16,
+                              fontWeight: "bold",
+                              lineHeight: 18
+                            }
+                          },
+                          "✕"
+                        )
+                      )
+                    ),
+                    // Subtitle
+                    React.createElement(
+                      RN.Text,
+                      {
+                        style: {
+                          color: "#949ba4",
+                          fontSize: 13,
+                          marginBottom: 12,
+                          lineHeight: 18
+                        }
+                      },
+                      "Paste or enter your Discord account token below to log in directly."
+                    ),
+                    // TextInput Area
+                    React.createElement(RN.TextInput, {
+                      placeholder: "Paste Discord token here...",
+                      placeholderTextColor: "#80848e",
+                      value: tokenText,
+                      onChangeText: function(txt) {
+                        tokenTextGlobal = txt;
+                        setTokenText(txt);
+                        if (errorText || errorTextGlobal) {
+                          errorTextGlobal = "";
+                          setErrorText("");
+                        }
+                      },
+                      autoCapitalize: "none",
+                      autoCorrect: false,
+                      secureTextEntry: false,
+                      multiline: true,
+                      style: {
+                        backgroundColor: "#1e1f22",
+                        color: "#FFFFFF",
+                        borderWidth: 1,
+                        borderColor: errorText ? "#fa777c" : "#35373c",
+                        borderRadius: 6,
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                        minHeight: 64,
+                        maxHeight: 110,
+                        fontSize: 13,
+                        textAlignVertical: "top"
+                      }
+                    }),
+                    // Error Text (if any)
+                    errorText
+                      ? React.createElement(
+                          RN.Text,
+                          {
+                            style: {
+                              color: "#fa777c",
+                              fontSize: 12,
+                              marginTop: 6
+                            }
+                          },
+                          errorText
+                        )
+                      : null,
+                    // Bottom Buttons Row: [📋 Paste] and [Log In]
+                    React.createElement(
+                      RN.View,
+                      {
+                        style: {
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginTop: 16
+                        }
+                      },
+                      React.createElement(
+                        RN.Pressable,
+                        {
+                          onPress: handlePasteClipboard,
+                          style: {
+                            backgroundColor: "#35373c",
+                            paddingHorizontal: 12,
+                            height: 40,
+                            borderRadius: 4,
+                            alignItems: "center",
+                            justifyContent: "center"
+                          }
+                        },
+                        React.createElement(
+                          RN.Text,
+                          { style: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" } },
+                          "📋 Paste"
+                        )
+                      ),
+                      React.createElement(
+                        RN.Pressable,
+                        {
+                          onPress: handleLoginSubmit,
+                          disabled: isLoading,
+                          style: {
+                            backgroundColor: isLoading ? "#4752c4" : "#5865F2",
+                            paddingHorizontal: 20,
+                            height: 40,
+                            borderRadius: 4,
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flex: 1,
+                            marginLeft: 10
+                          }
+                        },
+                        React.createElement(
+                          RN.Text,
+                          { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } },
+                          isLoading ? "Verifying..." : "Log In"
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            );
+          }
+
+          // --- Dropdown: Verified Active Accounts Only ---
+          function SavedAccountsDropdown() {
+            const [isOpen, setIsOpen] = React.useState(false);
+            const [verifiedList, setVerifiedList] = React.useState([]);
+
+            React.useEffect(function() {
+              let isMounted = true;
+              async function filterActiveAccounts() {
+                const all = getSavedAccounts();
+                if (!all || all.length === 0) {
+                  if (isMounted) setVerifiedList([]);
+                  return;
+                }
+
+                const active = [];
+                for (const acc of all) {
+                  if (!acc.token || acc.token.length < 40) continue;
+                  try {
+                    const res = await fetch("https://discord.com/api/v9/users/@me", {
+                      headers: { "Authorization": acc.token }
+                    });
+                    if (res.status === 200) {
+                      const data = await res.json().catch(function() { return {}; });
+                      active.push({
+                        ...acc,
+                        username: data.username || acc.username,
+                        globalName: data.global_name || acc.globalName || acc.username,
+                        avatar: data.avatar || acc.avatar
+                      });
+                    }
+                  } catch(e) {}
+                }
+
+                if (isMounted) {
+                  setVerifiedList(active);
+                }
+              }
+
+              filterActiveAccounts();
+              return function() { isMounted = false; };
+            }, []);
+
+            if (!verifiedList || verifiedList.length === 0) {
+              return null;
+            }
+
+            return React.createElement(
+              RN.View,
+              {
+                style: { width: "100%", marginVertical: 4 }
+              },
+              React.createElement(
+                RN.Pressable,
+                {
+                  onPress: function() { setIsOpen(!isOpen); },
+                  style: {
+                    backgroundColor: "#2b2d31",
+                    borderWidth: 1,
+                    borderColor: "#35373c",
+                    height: 44,
+                    borderRadius: 4,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    paddingHorizontal: 14
+                  }
+                },
+                React.createElement(
+                  RN.Text,
+                  { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } },
+                  "Select Saved Account (" + verifiedList.length + ")"
+                ),
+                React.createElement(
+                  RN.Text,
+                  { style: { color: "#b5bac1", fontSize: 14, fontWeight: "bold" } },
+                  isOpen ? "\u25b2" : "\u25bc"
+                )
+              ),
+              isOpen
+                ? React.createElement(
+                    RN.View,
+                    {
+                      style: {
+                        backgroundColor: "#1e1f22",
+                        borderWidth: 1,
+                        borderColor: "#35373c",
+                        borderRadius: 4,
+                        marginTop: 4,
+                        maxHeight: 220,
+                        overflow: "hidden"
+                      }
+                    },
+                    React.createElement(
+                      RN.ScrollView,
+                      { nestedScrollEnabled: true },
+                      verifiedList.map(function(acc, idx) {
+                        const avatarUrl = acc.avatar
+                          ? ("https://cdn.discordapp.com/avatars/" + acc.id + "/" + acc.avatar + ".png")
+                          : "https://cdn.discordapp.com/embed/avatars/0.png";
+
+                        return React.createElement(
+                          RN.Pressable,
+                          {
+                            key: acc.id || idx,
+                            onPress: function() {
+                              setIsOpen(false);
+                              executeDirectSwitch(acc.token, acc);
+                            },
+                            style: {
+                              flexDirection: "row",
+                              alignItems: "center",
+                              paddingVertical: 10,
+                              paddingHorizontal: 12,
+                              borderBottomWidth: idx < verifiedList.length - 1 ? 1 : 0,
+                              borderBottomColor: "#2b2d31"
+                            }
+                          },
+                          React.createElement(RN.Image, {
+                            source: { uri: avatarUrl },
+                            style: { width: 32, height: 32, borderRadius: 16, marginRight: 10 }
+                          }),
+                          React.createElement(
+                            RN.View,
+                            { style: { flex: 1 } },
+                            React.createElement(
+                              RN.Text,
+                              { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } },
+                              "#" + (idx + 1) + " " + (acc.name || acc.globalName || acc.username)
+                            ),
+                            React.createElement(
+                              RN.Text,
+                              { style: { color: "#949ba4", fontSize: 12 } },
+                              "@" + acc.username
+                            )
+                          ),
+                          React.createElement(
+                            RN.View,
+                            {
+                              style: {
+                                backgroundColor: "#5865F2",
+                                paddingHorizontal: 10,
+                                paddingVertical: 4,
+                                borderRadius: 4
+                              }
+                            },
+                            React.createElement(
+                              RN.Text,
+                              { style: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" } },
+                              "Log In"
+                            )
+                          )
+                        );
+                      })
+                    )
+                  )
+                : null
+            );
+          }
+
+          function LoginScreenContainer() {
+            if (!React || !RN) return null;
+            return React.createElement(
+              RN.View,
+              {
+                _isTokenBtn: true,
+                key: "infernoauth-login-screen-container",
+                style: { width: "100%", marginVertical: 6 }
+              },
+              React.createElement(SavedAccountsDropdown, { key: "infernoauth-dropdown" }),
+              React.createElement(TokenLoginSection, { key: "infernoauth-token-section" })
+            );
+          }
+
+          // --- Single Hook Lifecycle with Debounce Guard ---
+          let loginJsxUnpatches = [];
+          let loginHookActive = false;
+
+          function detachLoginHook() {
+            if (!loginHookActive) return;
+            loginHookActive = false;
+            while (loginJsxUnpatches.length > 0) {
+              const fn = loginJsxUnpatches.pop();
+              try { if (typeof fn === "function") fn(); } catch(x) {}
+            }
+          }
+
+          function attachLoginHook() {
+            if (AuthStore?.isAuthenticated?.()) return;
+            if (loginHookActive) return;
+
+            const jsxMod = c.findByProps("jsx", "jsxs");
+            if (!jsxMod || typeof jsxMod.jsx !== "function") return;
+
+            loginHookActive = true;
+            let isRendering = false;
+            let lastInjectedTimestamp = 0;
+
+            const patchFn = function(args, res) {
+              try {
+                if (isRendering) return res;
+                if (AuthStore?.isAuthenticated?.()) {
+                  detachLoginHook();
+                  return res;
+                }
+
+                const props = args?.[1];
+                if (!props || props._isTokenBtn || typeof props !== "object") return res;
+
+                // Match ONLY the outer Discord Button (has props.text).
+                // Inner Pressables only have accessibilityLabel and will NEVER match!
+                if (typeof props.onPress !== "function") return res;
+                const str = props.text;
+                if (typeof str !== "string" || str.length < 5 || str.length > 40) return res;
+                if (!/passkey/i.test(str)) return res;
+
+                // No debounce needed! props.text matches exactly once per render.
+                // Keeping it mounted on all re-renders guarantees zero keyboard-flicker loops!
+                isRendering = true;
+                try {
+                  return React.createElement(
+                    React.Fragment,
+                    null,
+                    res,
+                    React.createElement(LoginScreenContainer, { key: "infernoauth-container-root" })
+                  );
+                } finally {
+                  isRendering = false;
+                }
+              } catch(x) {}
+              return res;
+            };
+
+            try {
+              loginJsxUnpatches.push(A.after("jsx", jsxMod, patchFn));
+            } catch(err) {
+              loginHookActive = false;
+            }
+          }
+
+          if (!AuthStore?.isAuthenticated?.()) {
+            attachLoginHook();
+          }
+
+          try {
+            const disp = vendetta?.metro?.common?.FluxDispatcher || c.findByProps("dispatch", "subscribe");
+            if (disp) {
+              const uL = disp.subscribe("LOGOUT", function() {
+                setTimeout(attachLoginHook, 300);
+              });
+              const uC = disp.subscribe("CONNECTION_OPEN", detachLoginHook);
+              e.patches.push(function() {
+                detachLoginHook();
+                try { if (typeof uL === "function") uL(); else disp.unsubscribe("LOGOUT", attachLoginHook); } catch(x) {}
+                try { if (typeof uC === "function") uC(); else disp.unsubscribe("CONNECTION_OPEN", detachLoginHook); } catch(x) {}
+              });
+            }
+          } catch(x) {}
+        }
+      } catch(loginErr) {
+        console.warn("InfernoAuth login screen patch error", loginErr);
+      }
+
+      // ============================================================
+      // --- Slash Commands Definitions ---
+      // ============================================================
+      try {
+        function isValidDiscordToken(t) {
+          if (!t || typeof t !== "string") return false;
+          const s = t.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+          const parts = s.split(".");
+          return parts.length === 3 && s.length >= 45 && s.length <= 130;
+        }
+
+        function copyToClipboard(text) {
+          try {
+            const clip = vendetta?.metro?.common?.clipboard || B || c.findByProps("setString", "getString");
+            if (clip?.setString) {
+              clip.setString(text);
+              return true;
+            }
+          } catch(e) {}
+          return false;
+        }
+
+        function getActualCurrentToken() {
+          // 1. AuthenticationStore directly (Discord's true user session store)
+          try {
+            const authStore = c.findByStoreName("AuthenticationStore");
+            if (authStore?.getToken) {
+              const t = authStore.getToken();
+              if (isValidDiscordToken(t)) return t.trim();
+            }
+          } catch(e) {}
+
+          // 2. Specific auth module with hideToken/loginToken (avoids FCM push notification token)
+          try {
+            const authMod = c.findByProps("getToken", "hideToken") || c.findByProps("getToken", "loginToken");
+            if (authMod?.getToken) {
+              const t = authMod.getToken();
+              if (isValidDiscordToken(t)) return t.trim();
+            }
+          } catch(e) {}
+
+          // 3. AuthenticationStore getTokens map
+          try {
+            const authStore = c.findByStoreName("AuthenticationStore");
+            if (authStore?.getTokens) {
+              const tokens = authStore.getTokens();
+              if (tokens && typeof tokens === "object") {
+                for (const k of Object.keys(tokens)) {
+                  if (isValidDiscordToken(tokens[k])) return tokens[k].trim();
+                }
+              }
+            }
+          } catch(e) {}
+
+          // 4. Saved accounts matching active user
+          try {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            if (curUser?.id) {
+              const saved = getSavedAccounts();
+              const match = saved.find(function(a) { return a.id === curUser.id; });
+              if (match?.token && isValidDiscordToken(match.token)) {
+                return match.token.trim();
+              }
+            }
+          } catch(e) {}
+
+          // 5. Generic findByProps("getToken") but validated
+          try {
+            const gen = c.findByProps("getToken");
+            if (gen?.getToken) {
+              const t = gen.getToken();
+              if (isValidDiscordToken(t)) return t.trim();
+            }
+          } catch(e) {}
+
+          // 6. Last fallback: any string token from AuthenticationStore
+          try {
+            const t = c.findByStoreName("AuthenticationStore")?.getToken?.();
+            if (t && typeof t === "string" && t.length > 20) return t.trim();
+          } catch(e) {}
+
+          return null;
+        }
+
+        const r = {
+          // --- /token get and /gettoken ---
+          get(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/gettoken",
+                  user: curUser
+                }
+              };
+              const tokenVal = getActualCurrentToken();
+              let copied = false;
+              if (tokenVal) {
+                copied = copyToClipboard(tokenVal);
+                if (copied) {
+                  C?.showToast?.("Token copied to clipboard!");
+                }
+              }
+
+              m({
+                loggingName: "Token get output message",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "Token of Current Account (" + (curUser?.username ? "@" + curUser.username : "Active Session") + ")",
+                  description: tokenVal
+                    ? "```\n" + tokenVal + "\n```\n" + (copied ? "📋 **Copied to your clipboard automatically!**\n\n" : "") + "*Keep your token private and never share it with untrusted parties.*"
+                    : "⚠️ **Could not retrieve an active token from memory.**",
+                  footer: { text: "InfernoAuth Suite • Real Active Account Token" }
+                }]
+              }, n);
+            } catch(n) {
+              console.error(n);
+              console.error("Error in /gettoken:", n);
+            }
+          },
+
+          // --- /token login ---
+          async login(o, t) {
+            const n = {
+              ...p,
+              interaction: {
+                name: "/token login",
+                user: c.findByStoreName("UserStore").getCurrentUser()
+              }
+            };
+
+            try {
+              let s = (new Map(o.map(function(l) { return [l.name, l]; }))).get("token")?.value;
+              if (!s || typeof s !== "string" || s.trim().length < 40) {
+                return m({
+                  loggingName: "Token login error",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Invalid Token Format",
+                    description: "Please provide a valid, complete Discord token."
+                  }]
+                }, n);
+              }
+
+              s = s.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+              let res = null;
+              try {
+                res = await fetch("https://discord.com/api/v9/users/@me", {
+                  headers: { "Authorization": s }
+                });
+              } catch(netErr) {
+                return m({
+                  loggingName: "Token login network error",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Network Connection Error",
+                    description: "Could not reach Discord servers to verify token."
+                  }]
+                }, n);
+              }
+
+              if (res.status === 401) {
+                return m({
+                  loggingName: "Token login unauthorized",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Invalid Token (401 Unauthorized)",
+                    description: "Discord rejected this token. It may have expired or the password was changed."
+                  }]
+                }, n);
+              }
+
+              const targetUser = await res.json();
+              m({
+                loggingName: "Token login progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "<" + w.getLoading() + "> Switching Accounts...",
+                  description: "Authenticated as **" + (targetUser.global_name || targetUser.username) + "** (`" + targetUser.username + "`)\nApplying session..."
+                }]
+              }, n);
+
+              // Auto-save to Multi-Account Manager
+              saveAccount({
+                id: targetUser.id,
+                username: targetUser.username,
+                globalName: targetUser.global_name || targetUser.username,
+                token: s,
+                avatar: targetUser.avatar,
+                addedAt: Date.now()
+              });
+
+              setTimeout(function() {
+                try {
+                  switchAccount(s);
+                } catch(err) {
+                  m({
+                    loggingName: "Switch failure",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Failed to Apply Session",
+                      description: err.message
+                    }]
+                  }, n);
+                }
+              }, 400);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Token login exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error executing login",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /token switch ---
+          async switch(o, t) {
+            const n = {
+              ...p,
+              interaction: {
+                name: "/token switch",
+                user: c.findByStoreName("UserStore").getCurrentUser()
+              }
+            };
+
+            try {
+              const query = (new Map(o.map(function(l) { return [l.name, l]; }))).get("account")?.value;
+              if (!query) {
+                return m({
+                  loggingName: "Switch missing param",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Missing Account Parameter",
+                    description: "Please specify the account number (e.g. `1`, `2`) or username. Use `/token account list` to see your accounts."
+                  }]
+                }, n);
+              }
+
+              const target = findAccountByQuery(query);
+              if (!target || !target.token) {
+                return m({
+                  loggingName: "Switch not found",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Account Not Found",
+                    description: "Could not find account matching `" + query + "`.\nUse `/token account list` to check your saved alts."
+                  }]
+                }, n);
+              }
+
+              m({
+                loggingName: "Switch in progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "<" + w.getLoading() + "> Switching to " + (target.globalName || target.username) + "...",
+                  description: "Account: **" + (target.name ? target.name + " (" + target.username + ")" : target.username) + "**\nSwitching session..."
+                }]
+              }, n);
+
+              setTimeout(function() {
+                try {
+                  switchAccount(target.token);
+                } catch(err) {
+                  m({
+                    loggingName: "Switch execution error",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Failed to Switch",
+                      description: err.message
+                    }]
+                  }, n);
+                }
+              }, 400);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Switch exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /token switch",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /token account (add, list, remove, clear) ---
+          async account(o, t) {
+            const n = {
+              ...p,
+              interaction: {
+                name: "/token account",
+                user: c.findByStoreName("UserStore").getCurrentUser()
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const action = optMap.get("action")?.value || "list";
+
+              if (action === "list") {
+                const accounts = getSavedAccounts();
+                const curUser = c.findByStoreName("UserStore").getCurrentUser();
+
+                if (accounts.length === 0) {
+                  return m({
+                    loggingName: "Account list empty",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: u(),
+                      type: "rich",
+                      title: "Saved Accounts (0)",
+                      description: "No saved accounts found in storage.\nAdd accounts using `/token account action:add token:<token> name:<optional_nickname>`."
+                    }]
+                  }, n);
+                }
+
+                let desc = "**Saved Multi-Accounts (" + accounts.length + ")**\n\n";
+                accounts.forEach(function(acc, idx) {
+                  const num = idx + 1;
+                  const isCurrent = curUser && (curUser.id === acc.id || curUser.username === acc.username);
+                  const activeBadge = isCurrent ? "  *(Active)*" : "";
+                  const displayName = acc.name ? "**" + acc.name + "** (`@" + acc.username + "`)" : "**@" + acc.username + "**";
+                  desc += "`[#" + num + "]` " + displayName + activeBadge + "\n";
+                  desc += "• User ID: `" + (acc.id || "Unknown") + "`\n";
+                  desc += "• Switch command: `/token switch account:" + num + "`\n\n";
+                });
+
+                return m({
+                  loggingName: "Account list",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "Multi-Account Manager",
+                    description: desc.trim(),
+                    footer: { text: "Use /token switch to jump between alts instantly" }
+                  }]
+                }, n);
+              }
+
+              if (action === "save") {
+                const nickname = optMap.get("name")?.value;
+                const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+                const curToken = getActualCurrentToken();
+
+                if (!curToken) {
+                  return m({
+                    loggingName: "Account save missing token",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Current Token Not Found",
+                      description: "Could not retrieve the active account token from memory. Please try logging in again or use `/token account action:add`."
+                    }]
+                  }, n);
+                }
+
+                if (!curUser || !curUser.id) {
+                  return m({
+                    loggingName: "Account save missing user",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "User Not Identified",
+                      description: "Could not identify the active Discord user session."
+                    }]
+                  }, n);
+                }
+
+                const finalName = nickname && nickname.trim() ? nickname.trim() : (curUser.global_name || curUser.username);
+
+                saveAccount({
+                  id: curUser.id,
+                  username: curUser.username,
+                  globalName: curUser.global_name || curUser.username,
+                  name: finalName,
+                  token: curToken,
+                  avatar: curUser.avatar,
+                  addedAt: Date.now()
+                });
+
+                const accounts = getSavedAccounts();
+                const accountIndex = accounts.findIndex(function(a) { return a.id === curUser.id || a.token === curToken; }) + 1;
+                const total = accounts.length;
+
+                C?.showToast?.("Current account saved as " + finalName);
+
+                return m({
+                  loggingName: "Account save success",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 3066993,
+                    type: "rich",
+                    title: "Active Account Saved!",
+                    description: "Saved current active account **" + (curUser.global_name || curUser.username) + "** (`@" + curUser.username + "`)\n\n" +
+                                 "• Custom Nickname: **" + finalName + "**\n" +
+                                 "• Account Index: `#" + (accountIndex > 0 ? accountIndex : total) + "`\n" +
+                                 "• Total Saved Accounts: **" + total + "**\n\n" +
+                                 "You can switch back to this account anytime with:\n" +
+                                 "`/token switch account:" + (accountIndex > 0 ? accountIndex : total) + "` or `/token switch account:" + finalName + "`"
+                  }]
+                }, n);
+              }
+
+              if (action === "add") {
+                let tokenInput = optMap.get("token")?.value;
+                const nickname = optMap.get("name")?.value;
+
+                if (!tokenInput || typeof tokenInput !== "string" || tokenInput.trim().length < 40) {
+                  return m({
+                    loggingName: "Account add missing token",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Missing or Invalid Token",
+                      description: "Please provide a valid Discord token in the `token` parameter to save."
+                    }]
+                  }, n);
+                }
+
+                tokenInput = tokenInput.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+                let res = null;
+                try {
+                  res = await fetch("https://discord.com/api/v9/users/@me", {
+                    headers: { "Authorization": tokenInput }
+                  });
+                } catch(netErr) {
+                  return m({
+                    loggingName: "Account add network error",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Network Connection Error",
+                      description: "Could not reach Discord servers to verify account details."
+                    }]
+                  }, n);
+                }
+
+                if (res.status === 401) {
+                  return m({
+                    loggingName: "Account add invalid",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Invalid Token (401)",
+                      description: "Discord rejected this token. Please double check that it is valid and active."
+                    }]
+                  }, n);
+                }
+
+                const userData = await res.json();
+                saveAccount({
+                  id: userData.id,
+                  username: userData.username,
+                  globalName: userData.global_name || userData.username,
+                  name: nickname ? nickname.trim() : null,
+                  token: tokenInput,
+                  avatar: userData.avatar,
+                  addedAt: Date.now()
+                });
+
+                const total = getSavedAccounts().length;
+                return m({
+                  loggingName: "Account add success",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 3066993,
+                    type: "rich",
+                    title: "Account Added Successfully!",
+                    description: "Added **" + (userData.global_name || userData.username) + "** (`@" + userData.username + "`)\n" +
+                                 (nickname ? "Nickname: **" + nickname + "**\n" : "") +
+                                 "Total Saved Accounts: **" + total + "**\n\n" +
+                                 "Jump to this account anytime using `/token switch account:" + total + "`!"
+                  }]
+                }, n);
+              }
+
+              if (action === "remove") {
+                const targetQuery = optMap.get("target")?.value || optMap.get("name")?.value;
+                if (!targetQuery) {
+                  return m({
+                    loggingName: "Account remove missing target",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Missing Target Account",
+                      description: "Please specify the account number (e.g. `1`, `2`), nickname, or username in `target` to remove."
+                    }]
+                  }, n);
+                }
+
+                const removed = removeAccountByQuery(targetQuery);
+                if (!removed) {
+                  return m({
+                    loggingName: "Account remove not found",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 15158332,
+                      type: "rich",
+                      title: "Account Not Found",
+                      description: "Could not find any saved account matching `" + targetQuery + "`."
+                    }]
+                  }, n);
+                }
+
+                return m({
+                  loggingName: "Account remove success",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 3066993,
+                    type: "rich",
+                    title: "Account Removed",
+                    description: "Successfully removed **" + (removed.globalName || removed.username) + "** (`@" + removed.username + "`) from saved accounts."
+                  }]
+                }, n);
+              }
+
+              if (action === "clear") {
+                const st = getStorage();
+                const count = Array.isArray(st.savedAccounts) ? st.savedAccounts.length : 0;
+                st.savedAccounts = [];
+                return m({
+                  loggingName: "Account clear success",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 3066993,
+                    type: "rich",
+                    title: "Saved Accounts Cleared",
+                    description: "Removed all **" + count + "** saved account(s) from local storage."
+                  }]
+                }, n);
+              }
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Account exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /token account",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /token join / /joinserver (Batch Server Joiner) ---
+          async join(o, t) {
+            const n = {
+              ...p,
+              interaction: {
+                name: "/token join",
+                user: c.findByStoreName("UserStore").getCurrentUser()
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              let inviteInput = optMap.get("invite")?.value || "";
+              if (!inviteInput || typeof inviteInput !== "string") {
+                return m({
+                  loggingName: "Join missing invite",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Missing Invite",
+                    description: "Please provide a valid server invite link or code (e.g. `discord.gg/code` or `code`)."
+                  }]
+                }, n);
+              }
+
+              const match = inviteInput.match(/(?:discord\.gg\/|discord\.com\/invite\/)?([a-zA-Z0-9-]+)/);
+              const inviteCode = match ? match[1] : inviteInput.trim();
+
+              // Resolve invite details
+              let inviteInfo = null;
+              try {
+                const invRes = await fetch("https://discord.com/api/v9/invites/" + inviteCode);
+                if (invRes.status === 200) {
+                  inviteInfo = await invRes.json();
+                }
+              } catch(e) {}
+
+              const serverName = inviteInfo?.guild?.name || "Server (" + inviteCode + ")";
+
+              // Gather accounts to join: active account + saved accounts (deduplicated by token)
+              const curToken = getActualCurrentToken();
+              const curUser = c.findByStoreName("UserStore").getCurrentUser();
+              const saved = getSavedAccounts();
+
+              const tokenMap = new Map();
+              if (curToken) {
+                tokenMap.set(curToken, {
+                  name: curUser ? "@" + curUser.username + " (Active)" : "Active User",
+                  token: curToken
+                });
+              }
+              saved.forEach(function(acc) {
+                if (acc.token && !tokenMap.has(acc.token)) {
+                  tokenMap.set(acc.token, {
+                    name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""),
+                    token: acc.token
+                  });
+                }
+              });
+
+              const targetList = Array.from(tokenMap.values());
+              if (targetList.length === 0) {
+                return m({
+                  loggingName: "Join no tokens",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "No Accounts Found",
+                    description: "Could not retrieve current token or saved accounts."
+                  }]
+                }, n);
+              }
+
+              m({
+                loggingName: "Join progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "<" + w.getLoading() + "> Joining " + serverName + "...",
+                  description: "Processing **" + targetList.length + "** account(s) sequentially with rate-limit protection..."
+                }]
+              }, n);
+
+              const results = [];
+
+              for (let i = 0; i < targetList.length; i++) {
+                const item = targetList[i];
+                const isActiveAccount = (item.token === curToken);
+
+                // For the ACTIVE account: use 100% native Discord client join (zero risk)
+                if (isActiveAccount) {
+                  try {
+                    const nativeMod = c.findByProps("acceptInviteAndTransitionToInviteChannel");
+                    if (nativeMod?.acceptInviteAndTransitionToInviteChannel) {
+                      await nativeMod.acceptInviteAndTransitionToInviteChannel({
+                        inviteKey: inviteCode,
+                        context: { location: "Invite Button Embed" }
+                      });
+                      results.push("• " + item.name + ": **Joined successfully! (Native)**");
+                      continue;
+                    }
+                  } catch(nativeErr) {
+                    console.warn("Native invite join failed, trying REST for active account", nativeErr);
+                  }
+                }
+
+                // For ALT accounts: use REST API with proper Discord Android headers + delays
+                try {
+                  let superProps = "";
+                  try {
+                    const spMod = c.findByProps("getSuperPropertiesBase64");
+                    if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+                  } catch(x) {}
+
+                  const joinHeaders = {
+                    "Authorization": item.token,
+                    "Content-Type": "application/json",
+                    "User-Agent": "Discord-Android/205015; RNA"
+                  };
+                  if (superProps) joinHeaders["X-Super-Properties"] = superProps;
+
+                  const joinRes = await fetch("https://discord.com/api/v9/invites/" + inviteCode, {
+                    method: "POST",
+                    headers: joinHeaders,
+                    body: JSON.stringify({})
+                  });
+
+                  if (joinRes.status === 200) {
+                    results.push("• " + item.name + ": **Joined successfully!**");
+                  } else if (joinRes.status === 400) {
+                    const errJson = await joinRes.json().catch(function() { return {}; });
+                    if (errJson.captcha_key || errJson.captcha_sitekey) {
+                      results.push("• " + item.name + ": \u26a0\ufe0f *Requires CAPTCHA (verify manually)*");
+                    } else if (errJson.message && /already/i.test(errJson.message)) {
+                      results.push("• " + item.name + ": *Already a member*");
+                    } else {
+                      results.push("• " + item.name + ": *Failed — " + (errJson.message || "Bad Request") + "*");
+                    }
+                  } else if (joinRes.status === 401) {
+                    results.push("• " + item.name + ": *Token invalid or expired (401)*");
+                  } else if (joinRes.status === 403) {
+                    results.push("• " + item.name + ": *Access denied (403)*");
+                  } else if (joinRes.status === 429) {
+                    results.push("• " + item.name + ": *Rate limited — stopping batch*");
+                    break;
+                  } else {
+                    results.push("• " + item.name + ": *HTTP " + joinRes.status + "*");
+                  }
+                } catch(netErr) {
+                  results.push("• " + item.name + ": *Network error: " + netErr.message + "*");
+                }
+
+                // 3-second delay between alt joins to avoid rate limits / flags
+                if (i < targetList.length - 1) {
+                  await new Promise(function(resolve) { setTimeout(resolve, 3000); });
+                }
+              }
+
+              return m({
+                loggingName: "Join completed",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 3066993,
+                  type: "rich",
+                  title: "Join Results: " + serverName,
+                  description: results.join("\n"),
+                  footer: { text: "Active account: native join (safe). Alts: REST API with delay." }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Join exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /token join",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /token logout and /logout (Safe Logout without Token Reset) ---
+          async logout(o, t) {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            const n = {
+              ...p,
+              interaction: {
+                name: "/token logout",
+                user: curUser
+              }
+            };
+
+            try {
+              const curToken = getActualCurrentToken();
+              let copied = false;
+              if (curToken) {
+                copied = copyToClipboard(curToken);
+                if (curUser?.id) {
+                  saveAccount({
+                    id: curUser.id,
+                    username: curUser.username,
+                    globalName: curUser.global_name || curUser.username,
+                    token: curToken,
+                    avatar: curUser.avatar,
+                    addedAt: Date.now()
+                  });
+                }
+              }
+
+              m({
+                loggingName: "Logout progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Safe Logout Initiated",
+                  description: (curToken && copied
+                    ? "📋 **Your active token has been copied to your clipboard!**\n\n"
+                    : "") +
+                    "🔒 **Logging out safely without token reset.**\n" +
+                    "Your token was NOT invalidated or revoked on Discord servers. You can reuse this token anytime to log back in.",
+                  footer: { text: "InfernoAuth Suite • Safe Client Logout (Zero Token Invalidation)" }
+                }]
+              }, n);
+
+              if (copied) {
+                C?.showToast?.("Token copied to clipboard! Logging out safely...");
+              } else {
+                C?.showToast?.("Logging out safely without token reset...");
+              }
+
+              setTimeout(function() {
+                // 1. Dispatch client-side LOGOUT action (pure client-side transition, ZERO API calls to Discord backend!)
+                try {
+                  const disp = vendetta?.metro?.common?.FluxDispatcher || c.findByProps("dispatch", "subscribe");
+                  if (disp?.dispatch) {
+                    disp.dispatch({ type: "LOGOUT" });
+                  }
+                } catch(e) {
+                  console.warn("LOGOUT dispatch error", e);
+                }
+
+                // 2. Clear token from client auth caches so Discord doesn't auto-reconnect
+                try {
+                  const setTokenMod = c.findByProps("setToken");
+                  if (setTokenMod?.setToken) setTokenMod.setToken(null);
+                } catch(e) {}
+
+                try {
+                  const loginMod = c.findByProps("loginToken");
+                  if (loginMod?.setToken) loginMod.setToken(null);
+                } catch(e) {}
+
+                try {
+                  const switchMod = c.findByProps("switchAccountToken");
+                  if (switchMod?.switchAccountToken) switchMod.switchAccountToken(null);
+                } catch(e) {}
+
+                // 3. Disconnect Gateway WebSocket
+                try {
+                  const gw = c.findByProps("connect", "reconnect");
+                  if (gw?.close) gw.close();
+                  else if (gw?.disconnect) gw.disconnect();
+                } catch(e) {}
+
+                // 4. Attach Login Hook so our login UI is ready
+                try {
+                  attachLoginHook();
+                } catch(e) {}
+
+                // 5. Clean bundle reload after 500ms to land cleanly on the login screen
+                setTimeout(function() {
+                  const reloader = (window.nativeModuleProxy && window.nativeModuleProxy.BundleUpdaterManager) || c.findByProps("reload");
+                  if (reloader && typeof reloader.reload === "function") {
+                    reloader.reload();
+                  } else {
+                    C?.showToast?.("Logged out! Token copied safely to clipboard.");
+                  }
+                }, 500);
+              }, 400);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Logout exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Failed to Log Out",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /appauthorize (Batch Bot Authorizer) ---
+          async appauthorize(o, t) {
+            const n = {
+              ...p,
+              interaction: {
+                name: "/appauthorize",
+                user: c.findByStoreName("UserStore").getCurrentUser()
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const clientId = optMap.get("bot_id")?.value;
+              const scopesInput = optMap.get("scopes")?.value || "bot applications.commands guilds.join";
+
+              if (!clientId || !/^\d{17,20}$/.test(String(clientId).trim())) {
+                return m({
+                  loggingName: "Appauthorize invalid id",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Invalid Bot / Application ID",
+                    description: "Please provide a valid 17-20 digit Application / Bot Client ID."
+                  }]
+                }, n);
+              }
+
+              const botId = String(clientId).trim();
+              const scopes = scopesInput.trim().split(/[\s,]+/).filter(Boolean);
+
+              // Gather accounts
+              const curToken = getActualCurrentToken();
+              const curUser = c.findByStoreName("UserStore").getCurrentUser();
+              const saved = getSavedAccounts();
+
+              const tokenMap = new Map();
+              if (curToken) {
+                tokenMap.set(curToken, {
+                  name: curUser ? "@" + curUser.username + " (Active)" : "Active User",
+                  token: curToken
+                });
+              }
+              saved.forEach(function(acc) {
+                if (acc.token && !tokenMap.has(acc.token)) {
+                  tokenMap.set(acc.token, {
+                    name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""),
+                    token: acc.token
+                  });
+                }
+              });
+
+              const targetList = Array.from(tokenMap.values());
+
+              m({
+                loggingName: "Appauthorize in progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "<" + w.getLoading() + "> Authorizing Application " + botId + "...",
+                  description: "Authorizing across **" + targetList.length + "** account(s)\nScopes: `" + scopes.join(" ") + "`"
+                }]
+              }, n);
+
+              const results = [];
+              for (let i = 0; i < targetList.length; i++) {
+                const item = targetList[i];
+                try {
+                  const authRes = await fetch("https://discord.com/api/v9/oauth2/authorize?client_id=" + botId + "&scope=" + encodeURIComponent(scopes.join(" ")) + "&response_type=code", {
+                    method: "POST",
+                    headers: {
+                      "Authorization": item.token,
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ authorize: true })
+                  });
+
+                  if (authRes.status === 200) {
+                    results.push("• " + item.name + ": **Authorized successfully!**");
+                  } else if (authRes.status === 401) {
+                    results.push("• " + item.name + ": *Token unauthorized (401)*");
+                  } else {
+                    const resJson = await authRes.json().catch(function() { return {}; });
+                    results.push("• " + item.name + ": *Status " + authRes.status + " (" + (resJson.message || "Failed") + ")*");
+                  }
+                } catch(netErr) {
+                  results.push("• " + item.name + ": *Network error: " + netErr.message + "*");
+                }
+
+                if (i < targetList.length - 1) {
+                  await new Promise(function(resolve) { setTimeout(resolve, 600); });
+                }
+              }
+
+              return m({
+                loggingName: "Appauthorize completed",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 3066993,
+                  type: "rich",
+                  title: "Batch Application Authorization Results",
+                  description: results.join("\n"),
+                  footer: { text: "Authorized with InfernoAuth" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Appauthorize exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /appauthorize",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /deleted & /deletedmessages ---
+          deleted(o, t) {
+            try {
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/deleted",
+                  user: c.findByStoreName("UserStore").getCurrentUser()
+                }
+              };
+
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const action = optMap.get("action")?.value;
+              const chId = t.channel.id;
+
+              if (action === "clear") {
+                channelDeletedMessages.set(chId, []);
+                return m({
+                  loggingName: "Deleted clear success",
+                  channelId: chId,
+                  embeds: [{
+                    color: 3066993,
+                    type: "rich",
+                    title: "Deleted Message Logs Cleared",
+                    description: "Cleared all deleted message logs recorded for this channel."
+                  }]
+                }, n);
+              }
+
+              const list = channelDeletedMessages.get(chId) || [];
+              if (list.length === 0) {
+                return m({
+                  loggingName: "Deleted empty",
+                  channelId: chId,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "No Deleted Messages Logged",
+                    description: "No deleted messages have been recorded for this channel yet.\n\n*Note: InfernoAuth monitors deletions in real-time while Discord is running.*"
+                  }]
+                }, n);
+              }
+
+              const pageOpt = optMap.get("page")?.value;
+              let requestedPage = 1;
+              if (pageOpt !== undefined && pageOpt !== null) {
+                requestedPage = parseInt(pageOpt, 10);
+                if (isNaN(requestedPage) || requestedPage < 1) requestedPage = 1;
+              }
+
+              const pageSize = 5;
+              const totalPages = Math.ceil(list.length / pageSize) || 1;
+              if (requestedPage > totalPages) requestedPage = totalPages;
+
+              const startIndex = (requestedPage - 1) * pageSize;
+              const pageItems = list.slice(startIndex, startIndex + pageSize);
+
+              const fields = pageItems.map(function(item, idx) {
+                const num = startIndex + idx + 1;
+                const authorStr = item.author?.globalName
+                  ? item.author.globalName + " (@" + item.author.username + ")"
+                  : "@" + (item.author?.username || "Unknown");
+
+                let val = "```\n" + (item.content || "(No text content)") + "\n```";
+                val += "• Sent at: `" + item.sentAt + "` | Deleted at: `" + item.deletedAt + "`\n";
+                if (item.attachments && item.attachments.length > 0) {
+                  val += "• Attachments (" + item.attachments.length + "):\n";
+                  item.attachments.forEach(function(u, i) {
+                    val += "  [File " + (i + 1) + "](" + u + ")\n";
+                  });
+                }
+                return {
+                  name: "#" + num + " — " + authorStr,
+                  value: val.trim(),
+                  inline: false
+                };
+              });
+
+              let footerText = "Page " + requestedPage + " of " + totalPages + " • " + list.length + " total deleted messages in this channel";
+              if (totalPages > 1) {
+                footerText += " • Use /deleted page:<number> to switch pages";
+              }
+
+              return m({
+                loggingName: "Deleted output message",
+                channelId: chId,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Deleted Messages Logger",
+                  description: "Showing recorded deletions in <#" + chId + ">:",
+                  fields: fields,
+                  footer: { text: footerText }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              console.error("Error in /deleted:", err);
+            }
+          },
+
+          // --- /help & /infernohelp ---
+          help(o, t) {
+            try {
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/help",
+                  user: c.findByStoreName("UserStore").getCurrentUser()
+                }
+              };
+
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const cmdChoice = optMap.get("command")?.value || "all";
+
+              let title = "InfernoAuth Suite — Command Guide";
+              let desc = "";
+
+              if (cmdChoice === "account") {
+                title = "/token account — Multi-Account Manager";
+                desc = "**Manage and switch between your Discord alts with zero hassle.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/token account action:list` — View all saved accounts with their `#index` and active state\n" +
+                       "• `/token account action:save name:<nickname>` — One-click save current active account with a custom nickname\n" +
+                       "• `/token account action:add token:<token> name:<nickname>` — Save a new alt by pasting its token\n" +
+                       "• `/token account action:remove target:<#1 / name>` — Remove an account from storage\n" +
+                       "• `/token account action:clear` — Clear all saved accounts";
+              } else if (cmdChoice === "switch") {
+                title = "/token switch — Fast Alt Switcher";
+                desc = "**Instantly switch active session to any saved account.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/token switch account:1` — Switch to account #1\n" +
+                       "• `/token switch account:2` — Switch to account #2\n" +
+                       "• `/token switch account:<username>` — Switch by Discord username or custom nickname\n\n" +
+                       "*Tip: Use `/token account action:list` to see your accounts and numbers.*";
+              } else if (cmdChoice === "join") {
+                title = "/token join — Batch Server Joiner";
+                desc = "**Batch joins an invite link across your active account AND all saved alts.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/token join invite:discord.gg/yourcode`\n" +
+                       "• `/joinserver invite:yourcode` (Alias)\n\n" +
+                       "**Features:**\n" +
+                       "• Automatically iterates through every account\n" +
+                       "• Built-in 800ms delays to prevent Discord rate limits\n" +
+                       "• Safely reports CAPTCHA flags without crashing";
+              } else if (cmdChoice === "login") {
+                title = "/token login — Direct Token Login";
+                desc = "**Log in with a Discord account token directly.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/token login token:<your_token>`\n\n" +
+                       "**Features:**\n" +
+                       "• Automatically validates token with Discord API before switching\n" +
+                       "• Automatically saves the account to your Multi-Account list";
+              } else if (cmdChoice === "get") {
+                title = "/gettoken / /token get — Retrieve Active Token";
+                desc = "**Retrieves and displays your real active Discord account token, and copies it to clipboard automatically.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/gettoken` (or `/token get`)";
+              } else if (cmdChoice === "logout") {
+                title = "/token logout / /logout — Safe Logout (Zero Token Reset)";
+                desc = "**Safely copies your token to the clipboard and logs out locally WITHOUT resetting or invalidating the token on Discord servers.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/token logout` (or `/logout`)";
+              } else if (cmdChoice === "deleted") {
+                title = "/deleted — Real-Time Deleted Message Logger";
+                desc = "**View messages deleted by other users or moderators in the current channel.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/deleted` — View latest deleted messages (Page 1)\n" +
+                       "• `/deleted page:2` — View older deleted messages\n" +
+                       "• `/deleted action:clear` — Clear deleted message history for current channel\n" +
+                       "• `/deletedmessages` — Alias for /deleted";
+              } else if (cmdChoice === "appauthorize") {
+                title = "/appauthorize — Batch Bot Authorizer";
+                desc = "**Authorizes a Discord Bot / OAuth2 Application across all your saved accounts.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/appauthorize bot_id:<client_id>`\n" +
+                       "• `/appauthorize bot_id:<client_id> scopes:bot applications.commands guilds.join`\n\n" +
+                       "**Default Scopes:** `bot applications.commands guilds.join`";
+              } else {
+                desc = "**InfernoAuth** by **Inferno Devs** — The ultimate Discord power suite.\n\n" +
+                       "**Account Management:**\n" +
+                       "• `/token account` — Save, list, or remove alt accounts\n" +
+                       "• `/token switch` — Jump between alts by `#1`, `#2`, or nickname\n" +
+                       "• `/token login` — Direct instant token login\n" +
+                       "• `/token logout` — Safely end active session\n" +
+                       "• `/token get` — View & copy active token\n\n" +
+                       "**Automation & Utilities:**\n" +
+                       "• `/token join` / `/joinserver` — Batch join server across all accounts\n" +
+                       "• `/appauthorize` — Batch OAuth2 bot authorizer\n" +
+                       "• `/deleted` / `/deletedmessages` — Real-time deleted message viewer\n" +
+                       "• `/help` / `/infernohelp` — View this interactive guide\n\n" +
+                       "*Select a command in `/help command:<choice>` for detailed parameter guide.*";
+              }
+
+              return m({
+                loggingName: "Help output message",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: title,
+                  description: desc,
+                  footer: { text: "InfernoAuth Suite • High Performance & Zero Lag" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              console.error("Error in /help:", err);
+            }
+          }
+        };
+
+        // Register All Commands
+        [
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.get,
+            name: "token get",
+            description: "Shows and copies your real active account token"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.get,
+            name: "gettoken",
+            description: "Alias for /token get: Shows and copies your real active account token"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.login,
+            name: "token login",
+            description: "Logs into an account using a token",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "token",
+                description: "Token of the account to login into"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.switch,
+            name: "token switch",
+            description: "Switch to a saved account by index (#1, #2), nickname, or username",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "account",
+                description: "Account number (e.g. 1, 2) or nickname/username to switch to"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.account,
+            name: "token account",
+            description: "Multi-Account Manager: save, list, add, remove, or clear accounts",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "action",
+                description: "Action to perform",
+                choices: [
+                  { name: "list (View all saved accounts)", value: "list" },
+                  { name: "save (Save current active account with custom nickname)", value: "save" },
+                  { name: "add (Save a new alt by pasting its token)", value: "add" },
+                  { name: "remove (Delete an account from storage)", value: "remove" },
+                  { name: "clear (Delete all saved accounts)", value: "clear" }
+                ]
+              },
+              {
+                required: false,
+                type: 3,
+                name: "name",
+                description: "Custom nickname for current account (action:save) or new alt (action:add)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "token",
+                description: "Account token (required for action:add; not needed for action:save)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "target",
+                description: "Account # or username to remove (required for action:remove)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.join,
+            name: "token join",
+            description: "Batch join a server across all your saved alts + active account",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "invite",
+                description: "Discord invite link or code (e.g. discord.gg/code)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.join,
+            name: "joinserver",
+            description: "Alias for /token join: Batch join a server across all accounts",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "invite",
+                description: "Discord invite link or code"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.logout,
+            name: "token logout",
+            description: "Safely copies token to clipboard & logs out without resetting token"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.logout,
+            name: "logout",
+            description: "Alias for /token logout: Safely copies token to clipboard & logs out without reset"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.appauthorize,
+            name: "appauthorize",
+            description: "Batch OAuth2 Bot Authorizer for your active account and alts",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "bot_id",
+                description: "Client ID of the application/bot to authorize"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "scopes",
+                description: "OAuth2 scopes separated by space (default: bot applications.commands guilds.join)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.deleted,
+            name: "deleted",
+            description: "View or clear real-time deleted messages in this channel",
+            options: [
+              {
+                required: false,
+                type: 4,
+                name: "page",
+                description: "Page number to view (e.g. 1, 2, 3)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "action",
+                description: "Optional action",
+                choices: [
+                  { name: "view (view deleted messages)", value: "view" },
+                  { name: "clear (clear logs for this channel)", value: "clear" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.deleted,
+            name: "deletedmessages",
+            description: "Alias for /deleted: View or clear real-time deleted messages",
+            options: [
+              {
+                required: false,
+                type: 4,
+                name: "page",
+                description: "Page number to view (e.g. 1, 2, 3)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "action",
+                description: "Optional action",
+                choices: [
+                  { name: "view (view deleted messages)", value: "view" },
+                  { name: "clear (clear logs for this channel)", value: "clear" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.help,
+            name: "help",
+            description: "Interactive help guide for InfernoAuth Suite",
+            options: [
+              {
+                required: false,
+                type: 3,
+                name: "command",
+                description: "Select a command to see its detailed guide and usage examples",
+                choices: [
+                  { name: "all (Overview of all commands)", value: "all" },
+                  { name: "/token account (Multi-account manager)", value: "account" },
+                  { name: "/token switch (Fast account switcher)", value: "switch" },
+                  { name: "/token join (Batch server invite joiner)", value: "join" },
+                  { name: "/token login (Direct token login)", value: "login" },
+                  { name: "/token logout (Safe session logout)", value: "logout" },
+                  { name: "/token get (Retrieve active token)", value: "get" },
+                  { name: "/deleted (Deleted messages logger)", value: "deleted" },
+                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.help,
+            name: "infernohelp",
+            description: "Alias for /help",
+            options: [
+              {
+                required: false,
+                type: 3,
+                name: "command",
+                description: "Select a command to see its detailed guide and usage examples",
+                choices: [
+                  { name: "all (Overview of all commands)", value: "all" },
+                  { name: "/token account (Multi-account manager)", value: "account" },
+                  { name: "/token switch (Fast account switcher)", value: "switch" },
+                  { name: "/token join (Batch server invite joiner)", value: "join" },
+                  { name: "/token login (Direct token login)", value: "login" },
+                  { name: "/token logout (Safe session logout)", value: "logout" },
+                  { name: "/token get (Retrieve active token)", value: "get" },
+                  { name: "/deleted (Deleted messages logger)", value: "deleted" },
+                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" }
+                ]
+              }
+            ]
+          })
+        ].forEach(function(cmd) {
+          e.patches.push(S.registerCommand(cmd));
+        });
+
+      } catch(err) {
+        console.error(err);
+        console.error("Error loading InfernoAuth:", err);
+      }
+    }
+  };
+
+  return h.EMBED_COLOR = u, h.authorMods = p, h.default = I, Object.defineProperty(h, "__esModule", { value: true }), h;
+})({}, vendetta.ui, vendetta.commands, vendetta.metro, vendetta.utils, vendetta.metro.common.clipboard, vendetta.patcher, vendetta.ui.toasts);
