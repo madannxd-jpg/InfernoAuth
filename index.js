@@ -120,24 +120,83 @@
 
       function updateRevengeThemeBackground(cfg) {
         try {
-          if (vendetta?.themes?.getCurrentTheme) {
-            const cur = vendetta.themes.getCurrentTheme();
-            if (cur && cur.data) {
-              if (cfg && cfg.enabled && cfg.url) {
-                cur.data.background = {
+          const themeAPI = window.bunny?.themes || vendetta?.themes || window.vendetta?.themes;
+          if (!themeAPI) return;
+
+          const THEME_ID = "inferno-builtin-theme";
+
+          if (cfg && cfg.enabled && cfg.url) {
+            const opacityVal = (typeof cfg.opacity === "number") ? cfg.opacity : 0.85;
+            const blurVal = (typeof cfg.blur === "number") ? cfg.blur : 10;
+            const bgAlpha = "65"; // ~40% opacity for base panels
+            const floatAlpha = "bb"; // ~73% opacity for floating popouts
+
+            const fullTheme = {
+              id: THEME_ID,
+              selected: true,
+              data: {
+                name: "Inferno Full Theme",
+                description: "Full-app translucent glass theme across all Discord pages",
+                authors: [{ name: "Inferno Devs" }],
+                spec: 2,
+                background: {
                   url: cfg.url,
-                  blur: typeof cfg.blur === "number" ? cfg.blur : 0,
-                  alpha: typeof cfg.opacity === "number" ? cfg.opacity : 0.85
-                };
-              } else {
-                delete cur.data.background;
+                  blur: blurVal,
+                  alpha: opacityVal
+                },
+                semanticColors: {
+                  "BACKGROUND_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
+                  "CHAT_BACKGROUND": ["#000000" + bgAlpha, "#ffffff" + bgAlpha],
+                  "BACKGROUND_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
+                  "BACKGROUND_SECONDARY_ALT": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BACKGROUND_TERTIARY": ["#111214" + bgAlpha, "#e3e5e8" + bgAlpha],
+                  "BACKGROUND_ACCENT": ["#2b2d31" + bgAlpha, "#d1d5db" + bgAlpha],
+                  "BACKGROUND_FLOATING": ["#111214" + floatAlpha, "#ffffff" + floatAlpha],
+                  "BACKGROUND_MOBILE_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
+                  "BACKGROUND_MOBILE_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
+                  "CARD_PRIMARY_BG": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
+                  "CARD_SECONDARY_BG": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BG_BACKDROP": ["#000000" + bgAlpha, "#000000" + bgAlpha],
+                  "BG_BASE_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
+                  "BG_BASE_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
+                  "BG_BASE_TERTIARY": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BG_SURFACE_OVERLAY": ["#111214" + floatAlpha, "#ffffff" + floatAlpha],
+                  "BG_SURFACE_RAISED": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
+                  "BG_MOD_FAINT": ["#ffffff15", "#00000010"],
+                  "BG_MOD_SUBTLE": ["#ffffff20", "#00000015"],
+                  "BG_MOD_STRONG": ["#ffffff30", "#00000025"]
+                },
+                rawColors: {
+                  "PRIMARY_DARK_600": "#111214" + bgAlpha,
+                  "PRIMARY_DARK_630": "#111214" + bgAlpha,
+                  "PRIMARY_DARK_660": "#111214" + bgAlpha,
+                  "PRIMARY_DARK_700": "#1e1f22" + bgAlpha,
+                  "PRIMARY_DARK_800": "#15161a" + bgAlpha,
+                  "PRIMARY_DARK_900": "#0b0b0c" + floatAlpha,
+                  "PRIMARY_DARK": "#111214" + bgAlpha,
+                  "PL_WHITE": "#ffffff",
+                  "BRAND_500": "#5865F2"
+                }
               }
-              if (typeof vendetta.themes.selectTheme === "function") {
-                vendetta.themes.selectTheme(cur, false);
-              }
+            };
+
+            if (themeAPI.themes) {
+              themeAPI.themes[THEME_ID] = fullTheme;
+            }
+            if (typeof themeAPI.selectTheme === "function") {
+              themeAPI.selectTheme(fullTheme, true);
+            }
+          } else {
+            if (themeAPI.themes && themeAPI.themes[THEME_ID]) {
+              delete themeAPI.themes[THEME_ID];
+            }
+            if (typeof themeAPI.selectTheme === "function") {
+              themeAPI.selectTheme(null, true);
             }
           }
-        } catch(e) {}
+        } catch(e) {
+          console.error("Error updating Revenge theme:", e);
+        }
       }
 
       function setBackgroundConfig(cfg) {
@@ -491,15 +550,10 @@
       }
 
       // ============================================================
-      // --- Dynamic Chat Background Injector ---
+      // --- Dynamic Full-App Background & Chat Injector ---
       // ============================================================
-      function patchChatBackground() {
+      function patchFullAppBackground() {
         try {
-          const MessagesModule = c.findByDisplayName("MessagesConnected", false) || c.find(function(m) {
-            return m?.default?.displayName === "MessagesConnected" || m?.displayName === "MessagesConnected";
-          });
-          if (!MessagesModule) return;
-
           const RN = c.common?.ReactNative || c.findByProps("ImageBackground") || window.ReactNative;
           const ImageBackground = RN?.ImageBackground;
           const StyleSheet = RN?.StyleSheet;
@@ -507,60 +561,103 @@
 
           if (!ImageBackground || !React) return;
 
-          const chatPatch = function(args, ret) {
-            try {
-              const bg = getBackgroundConfig();
-              if (!bg || !bg.enabled || !bg.url) return ret;
+          // 1. Patch NavigationContainer (Root container of entire Discord app)
+          try {
+            const Nav = c.common?.NavigationNative || c.findByProps("NavigationContainer");
+            const NavContainer = Nav?.NavigationContainer;
+            if (NavContainer) {
+              const rootPatch = function(args, ret) {
+                try {
+                  const bg = getBackgroundConfig();
+                  if (!bg || !bg.enabled || !bg.url) return ret;
+                  if (ret?.props?.["data-inferno-root-bg"]) return ret;
 
-              // Avoid duplicate wrapping
-              if (ret?.type === ImageBackground || ret?.props?.["data-inferno-bg"]) {
-                return ret;
-              }
-
-              // Apply translucent background to message list container
-              if (M && typeof M.findInReactTree === "function" && StyleSheet) {
-                const messagesComp = M.findInReactTree(
-                  ret,
-                  function(x) { return x && x.props && "HACK_fixModalInteraction" in x.props && x?.props?.style; }
-                );
-                if (messagesComp) {
-                  const alphaVal = (typeof bg.opacity === "number") ? bg.opacity : 0.85;
-                  const bgHex = "rgba(0, 0, 0, " + Math.max(0, Math.min(1, 1 - alphaVal)).toFixed(2) + ")";
-                  messagesComp.props.style = StyleSheet.flatten([
-                    messagesComp.props.style,
-                    { backgroundColor: bgHex }
-                  ]);
+                  return React.createElement(
+                    ImageBackground,
+                    {
+                      "data-inferno-root-bg": true,
+                      style: { flex: 1, width: "100%", height: "100%" },
+                      source: { uri: bg.url },
+                      blurRadius: typeof bg.blur === "number" ? bg.blur : 0
+                    },
+                    ret
+                  );
+                } catch(e) {
+                  return ret;
                 }
+              };
+
+              if (NavContainer.render) {
+                e.patches.push(A.after("render", NavContainer, rootPatch));
+              } else if (typeof NavContainer === "function") {
+                e.patches.push(A.after("render", NavContainer, rootPatch));
               }
-
-              return React.createElement(
-                ImageBackground,
-                {
-                  "data-inferno-bg": true,
-                  style: { flex: 1, height: "100%" },
-                  source: { uri: bg.url },
-                  blurRadius: typeof bg.blur === "number" ? bg.blur : 0
-                },
-                ret
-              );
-            } catch(err) {
-              return ret;
             }
-          };
+          } catch(err) {
+            console.warn("Failed to patch NavigationContainer root:", err);
+          }
 
-          if (typeof MessagesModule.default === "function") {
-            e.patches.push(A.after("default", MessagesModule, chatPatch));
-          } else if (MessagesModule.default && typeof MessagesModule.default.render === "function") {
-            e.patches.push(A.after("render", MessagesModule.default, chatPatch));
-          } else if (typeof MessagesModule === "function") {
-            e.patches.push(A.after("render", MessagesModule, chatPatch));
+          // 2. Patch MessagesConnected (Chat messages list)
+          try {
+            const MessagesModule = c.findByDisplayName("MessagesConnected", false) || c.find(function(m) {
+              return m?.default?.displayName === "MessagesConnected" || m?.displayName === "MessagesConnected";
+            });
+            if (MessagesModule) {
+              const chatPatch = function(args, ret) {
+                try {
+                  const bg = getBackgroundConfig();
+                  if (!bg || !bg.enabled || !bg.url) return ret;
+                  if (ret?.type === ImageBackground || ret?.props?.["data-inferno-bg"]) {
+                    return ret;
+                  }
+
+                  if (M && typeof M.findInReactTree === "function" && StyleSheet) {
+                    const messagesComp = M.findInReactTree(
+                      ret,
+                      function(x) { return x && x.props && "HACK_fixModalInteraction" in x.props && x?.props?.style; }
+                    );
+                    if (messagesComp) {
+                      const alphaVal = (typeof bg.opacity === "number") ? bg.opacity : 0.85;
+                      const bgHex = "rgba(0, 0, 0, " + Math.max(0, Math.min(1, 1 - alphaVal)).toFixed(2) + ")";
+                      messagesComp.props.style = StyleSheet.flatten([
+                        messagesComp.props.style,
+                        { backgroundColor: bgHex }
+                      ]);
+                    }
+                  }
+
+                  return React.createElement(
+                    ImageBackground,
+                    {
+                      "data-inferno-bg": true,
+                      style: { flex: 1, height: "100%" },
+                      source: { uri: bg.url },
+                      blurRadius: typeof bg.blur === "number" ? bg.blur : 0
+                    },
+                    ret
+                  );
+                } catch(err) {
+                  return ret;
+                }
+              };
+
+              if (typeof MessagesModule.default === "function") {
+                e.patches.push(A.after("default", MessagesModule, chatPatch));
+              } else if (MessagesModule.default && typeof MessagesModule.default.render === "function") {
+                e.patches.push(A.after("render", MessagesModule.default, chatPatch));
+              } else if (typeof MessagesModule === "function") {
+                e.patches.push(A.after("render", MessagesModule, chatPatch));
+              }
+            }
+          } catch(err) {
+            console.warn("Failed to patch MessagesConnected:", err);
           }
         } catch(err) {
-          console.error("Failed to patch chat background:", err);
+          console.error("Failed to patch full app background:", err);
         }
       }
 
-      patchChatBackground();
+      patchFullAppBackground();
       try {
         const initBg = getBackgroundConfig();
         if (initBg && initBg.enabled) {

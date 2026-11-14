@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: Custom /background wallpaper & frosted glass themes, Multi-account manager, /token join & /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: Full-App Translucent Theme across all Discord pages, Custom /background wallpaper & frosted glass, Multi-account manager, /token join & /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "2f9a3b29c380c611edbcb3492fa2e8b1cc3d67171ab5852d69a16bfed3ffddb4"
+  "hash": "bc6526d3b4e829127e11e9a84a3c18ede481328824035715ff123be77292ecac"
 }
