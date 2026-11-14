@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: Multi-account manager, /token join & /leaveserver with scope control, /leaveallserver confirmation, persistent /showedit history, 4096px /avatar /banner /servericon grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: Custom /background wallpaper & frosted glass themes, Multi-account manager, /token join & /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "0486046063a47ac12c55e627e8954e0381c17964c85c1477f0e927800d0aa8d9"
+  "hash": "2f9a3b29c380c611edbcb3492fa2e8b1cc3d67171ab5852d69a16bfed3ffddb4"
 }

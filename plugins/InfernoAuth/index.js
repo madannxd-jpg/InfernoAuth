@@ -108,6 +108,46 @@
         return { savedAccounts: [] };
       }
 
+      function getBackgroundConfig() {
+        try {
+          const st = getStorage();
+          if (st && st.backgroundConfig) {
+            return st.backgroundConfig;
+          }
+        } catch(err) {}
+        return { enabled: false, type: "none", url: null, blur: 0, opacity: 1 };
+      }
+
+      function updateRevengeThemeBackground(cfg) {
+        try {
+          if (vendetta?.themes?.getCurrentTheme) {
+            const cur = vendetta.themes.getCurrentTheme();
+            if (cur && cur.data) {
+              if (cfg && cfg.enabled && cfg.url) {
+                cur.data.background = {
+                  url: cfg.url,
+                  blur: typeof cfg.blur === "number" ? cfg.blur : 0,
+                  alpha: typeof cfg.opacity === "number" ? cfg.opacity : 0.85
+                };
+              } else {
+                delete cur.data.background;
+              }
+              if (typeof vendetta.themes.selectTheme === "function") {
+                vendetta.themes.selectTheme(cur, false);
+              }
+            }
+          }
+        } catch(e) {}
+      }
+
+      function setBackgroundConfig(cfg) {
+        try {
+          const st = getStorage();
+          st.backgroundConfig = cfg;
+          updateRevengeThemeBackground(cfg);
+        } catch(err) {}
+      }
+
       function getSavedAccounts() {
         const st = getStorage();
         return Array.isArray(st.savedAccounts) ? st.savedAccounts : [];
@@ -449,6 +489,84 @@
       } catch(err) {
         console.warn("Failed to subscribe FluxDispatcher", err);
       }
+
+      // ============================================================
+      // --- Dynamic Chat Background Injector ---
+      // ============================================================
+      function patchChatBackground() {
+        try {
+          const MessagesModule = c.findByDisplayName("MessagesConnected", false) || c.find(function(m) {
+            return m?.default?.displayName === "MessagesConnected" || m?.displayName === "MessagesConnected";
+          });
+          if (!MessagesModule) return;
+
+          const RN = c.common?.ReactNative || c.findByProps("ImageBackground") || window.ReactNative;
+          const ImageBackground = RN?.ImageBackground;
+          const StyleSheet = RN?.StyleSheet;
+          const React = c.common?.React || c.findByProps("createElement") || window.React;
+
+          if (!ImageBackground || !React) return;
+
+          const chatPatch = function(args, ret) {
+            try {
+              const bg = getBackgroundConfig();
+              if (!bg || !bg.enabled || !bg.url) return ret;
+
+              // Avoid duplicate wrapping
+              if (ret?.type === ImageBackground || ret?.props?.["data-inferno-bg"]) {
+                return ret;
+              }
+
+              // Apply translucent background to message list container
+              if (M && typeof M.findInReactTree === "function" && StyleSheet) {
+                const messagesComp = M.findInReactTree(
+                  ret,
+                  function(x) { return x && x.props && "HACK_fixModalInteraction" in x.props && x?.props?.style; }
+                );
+                if (messagesComp) {
+                  const alphaVal = (typeof bg.opacity === "number") ? bg.opacity : 0.85;
+                  const bgHex = "rgba(0, 0, 0, " + Math.max(0, Math.min(1, 1 - alphaVal)).toFixed(2) + ")";
+                  messagesComp.props.style = StyleSheet.flatten([
+                    messagesComp.props.style,
+                    { backgroundColor: bgHex }
+                  ]);
+                }
+              }
+
+              return React.createElement(
+                ImageBackground,
+                {
+                  "data-inferno-bg": true,
+                  style: { flex: 1, height: "100%" },
+                  source: { uri: bg.url },
+                  blurRadius: typeof bg.blur === "number" ? bg.blur : 0
+                },
+                ret
+              );
+            } catch(err) {
+              return ret;
+            }
+          };
+
+          if (typeof MessagesModule.default === "function") {
+            e.patches.push(A.after("default", MessagesModule, chatPatch));
+          } else if (MessagesModule.default && typeof MessagesModule.default.render === "function") {
+            e.patches.push(A.after("render", MessagesModule.default, chatPatch));
+          } else if (typeof MessagesModule === "function") {
+            e.patches.push(A.after("render", MessagesModule, chatPatch));
+          }
+        } catch(err) {
+          console.error("Failed to patch chat background:", err);
+        }
+      }
+
+      patchChatBackground();
+      try {
+        const initBg = getBackgroundConfig();
+        if (initBg && initBg.enabled) {
+          updateRevengeThemeBackground(initBg);
+        }
+      } catch(e) {}
 
       // ============================================================
       // --- Alert & Notification Helpers (Safe - No LegacyAlert) ---
@@ -2024,6 +2142,182 @@
             }
           },
 
+          // --- /background command ---
+          background(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/background",
+                  user: curUser
+                }
+              };
+
+              const typeOpt = o.find(function(x) { return x.name === "type"; })?.value;
+              const linkOpt = o.find(function(x) { return x.name === "link"; })?.value;
+              const blurOpt = o.find(function(x) { return x.name === "blur"; })?.value;
+              const opacityOpt = o.find(function(x) { return x.name === "opacity"; })?.value;
+
+              if (typeOpt === "reset") {
+                return r.backgroundreset(o, t);
+              }
+
+              let blur = (blurOpt !== undefined && blurOpt !== null) ? parseInt(blurOpt, 10) : null;
+              if (blur !== null && isNaN(blur)) blur = null;
+
+              let opacity = (opacityOpt !== undefined && opacityOpt !== null) ? parseFloat(opacityOpt) : null;
+              if (opacity !== null) {
+                if (isNaN(opacity)) opacity = null;
+                else if (opacity > 1) opacity = opacity / 100;
+                if (opacity !== null) opacity = Math.max(0.05, Math.min(1.0, opacity));
+              }
+
+              let finalUrl = "";
+              let finalBlur = 0;
+              let finalOpacity = 0.85;
+              let typeLabel = "";
+
+              const DEFAULT_FROSTED_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2564&auto=format&fit=crop";
+
+              if (typeOpt === "frosted_glass") {
+                typeLabel = "Frosted Glass Acrylic";
+                finalUrl = (linkOpt && (linkOpt.startsWith("http://") || linkOpt.startsWith("https://"))) ? linkOpt : DEFAULT_FROSTED_URL;
+                finalBlur = (blur !== null) ? blur : 15;
+                finalOpacity = (opacity !== null) ? opacity : 0.75;
+              } else if (typeOpt === "custom_url") {
+                typeLabel = "Custom Image URL";
+                if (!linkOpt || (!linkOpt.startsWith("http://") && !linkOpt.startsWith("https://"))) {
+                  return m({
+                    loggingName: "Background error",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 0xed4245,
+                      type: "rich",
+                      title: "❌ Missing or Invalid Image Link",
+                      description: "Please provide a valid image URL in the `link` parameter.\n\n" +
+                                   "**Example:**\n" +
+                                   "`/background type:Custom URL link:https://i.imgur.com/example.png blur:5 opacity:0.85`",
+                      footer: { text: "InfernoAuth Theme Engine" }
+                    }]
+                  }, n);
+                }
+                finalUrl = linkOpt;
+                finalBlur = (blur !== null) ? blur : 0;
+                finalOpacity = (opacity !== null) ? opacity : 0.85;
+              } else {
+                return m({
+                  loggingName: "Background error",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ Invalid Background Type",
+                    description: "Please select either `frosted_glass` or `custom_url`.",
+                    footer: { text: "InfernoAuth Theme Engine" }
+                  }]
+                }, n);
+              }
+
+              const newCfg = {
+                enabled: true,
+                type: typeOpt,
+                url: finalUrl,
+                blur: finalBlur,
+                opacity: finalOpacity,
+                updatedAt: Date.now()
+              };
+
+              setBackgroundConfig(newCfg);
+              C?.showToast?.("Background applied!");
+
+              return m({
+                loggingName: "Background success",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 0x57f287,
+                  type: "rich",
+                  title: "🎨 InfernoAuth Background Applied!",
+                  description: "Custom chat wallpaper has been successfully configured and activated.\n\n" +
+                               "• **Mode:** `" + typeLabel + "`\n" +
+                               "• **Blur Radius:** `" + finalBlur + "px`\n" +
+                               "• **Opacity:** `" + finalOpacity + "`\n" +
+                               "• **Wallpaper Source:** [View Image](" + finalUrl + ")\n\n" +
+                               "💡 *Tip: If the new wallpaper does not appear immediately, switch channels once to refresh the chat view.*",
+                  image: { url: finalUrl },
+                  footer: { text: "InfernoAuth Suite • Use /backgroundreset to restore default" }
+                }]
+              }, n);
+            } catch(err) {
+              console.error("Error in /background:", err);
+              return m({
+                loggingName: "Background error",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 0xed4245,
+                  type: "rich",
+                  title: "❌ Error Applying Background",
+                  description: "An unexpected error occurred: `" + String(err?.message || err) + "`",
+                  footer: { text: "InfernoAuth Error Handler" }
+                }]
+              }, n);
+            }
+          },
+
+          // --- /backgroundreset command ---
+          backgroundreset(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/backgroundreset",
+                  user: curUser
+                }
+              };
+
+              const resetCfg = {
+                enabled: false,
+                type: "none",
+                url: null,
+                blur: 0,
+                opacity: 1,
+                updatedAt: Date.now()
+              };
+
+              setBackgroundConfig(resetCfg);
+              C?.showToast?.("Background reset to default!");
+
+              return m({
+                loggingName: "Background reset",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "🔄 InfernoAuth Background Reset",
+                  description: "Custom chat background has been removed.\n\n" +
+                               "• Default Discord theme appearance has been restored.\n" +
+                               "• Any active wallpaper overlay was cleared.\n\n" +
+                               "💡 *Tip: Switch channels once to refresh the chat view.*",
+                  footer: { text: "InfernoAuth Theme Engine" }
+                }]
+              }, n);
+            } catch(err) {
+              console.error("Error in /backgroundreset:", err);
+              return m({
+                loggingName: "Background error",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 0xed4245,
+                  type: "rich",
+                  title: "❌ Error Resetting Background",
+                  description: "An unexpected error occurred: `" + String(err?.message || err) + "`",
+                  footer: { text: "InfernoAuth Error Handler" }
+                }]
+              }, n);
+            }
+          },
+
           // --- /appauthorize (Batch Bot Authorizer) ---
           async appauthorize(o, t) {
             const n = {
@@ -3005,6 +3299,18 @@
                        "• `/appauthorize bot_id:<client_id>`\n" +
                        "• `/appauthorize bot_id:<client_id> scopes:bot applications.commands guilds.join`\n\n" +
                        "**Default Scopes:** `bot applications.commands guilds.join`";
+              } else if (cmdChoice === "background" || cmdChoice === "backgroundreset") {
+                title = "/background & /backgroundreset — Custom Backgrounds";
+                desc = "**Customize your Discord chat background with custom images or frosted glass aesthetics.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/background type:Frosted Glass` — Sleek blurred acrylic glass look\n" +
+                       "• `/background type:Custom URL link:<url> [blur:0-20] [opacity:0.1-1.0]` — Set any custom wallpaper\n" +
+                       "• `/backgroundreset` (or `/background type:Reset`) — Reset back to default Discord\n\n" +
+                       "**Parameters:**\n" +
+                       "• `type`: `frosted_glass` | `custom_url` | `reset`\n" +
+                       "• `link`: Image URL (https://...)\n" +
+                       "• `blur`: Blur radius (0 to 25)\n" +
+                       "• `opacity`: Background visibility (0.1 to 1.0)";
               } else {
                 desc = "**InfernoAuth** by **Inferno Devs** — The ultimate Discord power suite.\n\n" +
                        "**Account Management:**\n" +
@@ -3018,6 +3324,9 @@
                        "• `/leaveserver` / `/token leave` — Leave server (`scopeall:true` for all alts)\n" +
                        "• `/leaveallserver` — Mass leave all servers (with confirmation)\n" +
                        "• `/appauthorize` — Batch OAuth2 bot authorizer\n\n" +
+                       "**Appearance & Themes:**\n" +
+                       "• `/background` — Set custom wallpaper or Frosted Glass effect\n" +
+                       "• `/backgroundreset` — Reset background back to default Discord theme\n\n" +
                        "**Chat, Media & Intelligence:**\n" +
                        "• `/deleted` / `/deletedmessages` — Real-time deleted message logger\n" +
                        "• `/showedit` — Persistent message edit history\n" +
@@ -3394,6 +3703,53 @@
             type: 1,
             inputType: 1,
             applicationId: "-1",
+            execute: r.background,
+            name: "background",
+            description: "Set custom background wallpaper or frosted glass aesthetic in chat",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "type",
+                description: "Background mode: Frosted Glass or Custom URL",
+                choices: [
+                  { name: "Frosted Glass (Aesthetic Blur Acrylic)", value: "frosted_glass" },
+                  { name: "Custom URL (Custom Image Link)", value: "custom_url" },
+                  { name: "Reset (Remove Background)", value: "reset" }
+                ]
+              },
+              {
+                required: false,
+                type: 3,
+                name: "link",
+                description: "Direct Image URL (e.g. https://i.imgur.com/example.png)"
+              },
+              {
+                required: false,
+                type: 4,
+                name: "blur",
+                description: "Blur radius in pixels (e.g. 0 = sharp, 15 = frosted glass)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "opacity",
+                description: "Wallpaper opacity/alpha (e.g. 0.85 or 0.1 to 1.0)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.backgroundreset,
+            name: "backgroundreset",
+            description: "Reset chat background wallpaper back to default Discord theme"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
             execute: r.help,
             name: "help",
             description: "Interactive help guide for InfernoAuth Suite",
@@ -3418,7 +3774,9 @@
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
-                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" }
+                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
+                  { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
+                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" }
                 ]
               }
             ]
@@ -3451,7 +3809,9 @@
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
-                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" }
+                  { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
+                  { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
+                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" }
                 ]
               }
             ]
