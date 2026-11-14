@@ -121,15 +121,16 @@
       function updateRevengeThemeBackground(cfg) {
         try {
           const themeAPI = window.bunny?.themes || vendetta?.themes || window.vendetta?.themes;
-          if (!themeAPI) return;
+          if (!themeAPI || !themeAPI.themes) return;
 
           const THEME_ID = "inferno-builtin-theme";
 
           if (cfg && cfg.enabled && cfg.url) {
             const opacityVal = (typeof cfg.opacity === "number") ? cfg.opacity : 0.85;
             const blurVal = (typeof cfg.blur === "number") ? cfg.blur : 10;
-            const bgAlpha = "65"; // ~40% opacity for base panels
-            const floatAlpha = "bb"; // ~73% opacity for floating popouts
+            const bgAlpha = "35"; // ~20% alpha for transparent glass
+            const bgAlphaSec = "40"; // ~25% alpha for sidebars
+            const floatAlpha = "99"; // popouts
 
             const fullTheme = {
               id: THEME_ID,
@@ -147,19 +148,19 @@
                 semanticColors: {
                   "BACKGROUND_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
                   "CHAT_BACKGROUND": ["#000000" + bgAlpha, "#ffffff" + bgAlpha],
-                  "BACKGROUND_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
-                  "BACKGROUND_SECONDARY_ALT": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BACKGROUND_SECONDARY": ["#1e1f22" + bgAlphaSec, "#f2f3f5" + bgAlphaSec],
+                  "BACKGROUND_SECONDARY_ALT": ["#15161a" + bgAlphaSec, "#ebedef" + bgAlphaSec],
                   "BACKGROUND_TERTIARY": ["#111214" + bgAlpha, "#e3e5e8" + bgAlpha],
                   "BACKGROUND_ACCENT": ["#2b2d31" + bgAlpha, "#d1d5db" + bgAlpha],
                   "BACKGROUND_FLOATING": ["#111214" + floatAlpha, "#ffffff" + floatAlpha],
                   "BACKGROUND_MOBILE_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
-                  "BACKGROUND_MOBILE_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
-                  "CARD_PRIMARY_BG": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
-                  "CARD_SECONDARY_BG": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BACKGROUND_MOBILE_SECONDARY": ["#1e1f22" + bgAlphaSec, "#f2f3f5" + bgAlphaSec],
+                  "CARD_PRIMARY_BG": ["#1e1f22" + bgAlphaSec, "#f2f3f5" + bgAlphaSec],
+                  "CARD_SECONDARY_BG": ["#15161a" + bgAlphaSec, "#ebedef" + bgAlphaSec],
                   "BG_BACKDROP": ["#000000" + bgAlpha, "#000000" + bgAlpha],
                   "BG_BASE_PRIMARY": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
-                  "BG_BASE_SECONDARY": ["#1e1f22" + bgAlpha, "#f2f3f5" + bgAlpha],
-                  "BG_BASE_TERTIARY": ["#15161a" + bgAlpha, "#ebedef" + bgAlpha],
+                  "BG_BASE_SECONDARY": ["#1e1f22" + bgAlphaSec, "#f2f3f5" + bgAlphaSec],
+                  "BG_BASE_TERTIARY": ["#15161a" + bgAlphaSec, "#ebedef" + bgAlphaSec],
                   "BG_SURFACE_OVERLAY": ["#111214" + floatAlpha, "#ffffff" + floatAlpha],
                   "BG_SURFACE_RAISED": ["#111214" + bgAlpha, "#ffffff" + bgAlpha],
                   "BG_MOD_FAINT": ["#ffffff15", "#00000010"],
@@ -170,8 +171,8 @@
                   "PRIMARY_DARK_600": "#111214" + bgAlpha,
                   "PRIMARY_DARK_630": "#111214" + bgAlpha,
                   "PRIMARY_DARK_660": "#111214" + bgAlpha,
-                  "PRIMARY_DARK_700": "#1e1f22" + bgAlpha,
-                  "PRIMARY_DARK_800": "#15161a" + bgAlpha,
+                  "PRIMARY_DARK_700": "#1e1f22" + bgAlphaSec,
+                  "PRIMARY_DARK_800": "#15161a" + bgAlphaSec,
                   "PRIMARY_DARK_900": "#0b0b0c" + floatAlpha,
                   "PRIMARY_DARK": "#111214" + bgAlpha,
                   "PL_WHITE": "#ffffff",
@@ -180,18 +181,16 @@
               }
             };
 
-            if (themeAPI.themes) {
-              themeAPI.themes[THEME_ID] = fullTheme;
-            }
+            themeAPI.themes[THEME_ID] = fullTheme;
             if (typeof themeAPI.selectTheme === "function") {
-              themeAPI.selectTheme(fullTheme, true);
+              themeAPI.selectTheme(THEME_ID);
             }
           } else {
-            if (themeAPI.themes && themeAPI.themes[THEME_ID]) {
+            if (themeAPI.themes[THEME_ID]) {
               delete themeAPI.themes[THEME_ID];
             }
             if (typeof themeAPI.selectTheme === "function") {
-              themeAPI.selectTheme(null, true);
+              themeAPI.selectTheme("default");
             }
           }
         } catch(e) {
@@ -550,7 +549,7 @@
       }
 
       // ============================================================
-      // --- Dynamic Full-App Background & Chat Injector ---
+      // --- Universal All-Pages Wallpaper & Theme Injector ---
       // ============================================================
       function patchFullAppBackground() {
         try {
@@ -561,97 +560,149 @@
 
           if (!ImageBackground || !React) return;
 
-          // 1. Patch NavigationContainer (Root container of entire Discord app)
-          try {
-            const Nav = c.common?.NavigationNative || c.findByProps("NavigationContainer");
-            const NavContainer = Nav?.NavigationContainer;
-            if (NavContainer) {
-              const rootPatch = function(args, ret) {
-                try {
-                  const bg = getBackgroundConfig();
-                  if (!bg || !bg.enabled || !bg.url) return ret;
-                  if (ret?.props?.["data-inferno-root-bg"]) return ret;
+          function makeViewTranslucent(tree, bgConfig) {
+            if (!tree || !M || typeof M.findInReactTree !== "function" || !StyleSheet) return;
+            const alphaVal = (typeof bgConfig.opacity === "number") ? bgConfig.opacity : 0.85;
+            const overlayAlpha = Math.max(0, Math.min(1, 1 - alphaVal)).toFixed(2);
+            const translucentBg = "rgba(0, 0, 0, " + overlayAlpha + ")";
 
-                  return React.createElement(
-                    ImageBackground,
-                    {
-                      "data-inferno-root-bg": true,
-                      style: { flex: 1, width: "100%", height: "100%" },
-                      source: { uri: bg.url },
-                      blurRadius: typeof bg.blur === "number" ? bg.blur : 0
-                    },
-                    ret
-                  );
-                } catch(e) {
-                  return ret;
-                }
-              };
+            if (tree.props && tree.props.style) {
+              tree.props.style = StyleSheet.flatten([
+                tree.props.style,
+                { backgroundColor: translucentBg }
+              ]);
+            }
 
-              if (NavContainer.render) {
-                e.patches.push(A.after("render", NavContainer, rootPatch));
-              } else if (typeof NavContainer === "function") {
-                e.patches.push(A.after("render", NavContainer, rootPatch));
+            // 1. Chat messages container
+            const chatComp = M.findInReactTree(
+              tree,
+              function(x) { return x && x.props && "HACK_fixModalInteraction" in x.props && x?.props?.style; }
+            );
+            if (chatComp) {
+              chatComp.props.style = StyleSheet.flatten([
+                chatComp.props.style,
+                { backgroundColor: translucentBg }
+              ]);
+            }
+
+            // 2. ScrollView / FastList / FlashList / FlatList (DMs list in Screenshot 3!)
+            const listComp = M.findInReactTree(
+              tree,
+              function(x) {
+                return x && x.props && (x.props.contentContainerStyle || x.props.data || x.props.sections || x.props.getItem);
+              }
+            );
+            if (listComp && listComp.props) {
+              if (listComp.props.style) {
+                listComp.props.style = StyleSheet.flatten([
+                  listComp.props.style,
+                  { backgroundColor: "transparent" }
+                ]);
+              }
+              if (listComp.props.contentContainerStyle) {
+                listComp.props.contentContainerStyle = StyleSheet.flatten([
+                  listComp.props.contentContainerStyle,
+                  { backgroundColor: "transparent" }
+                ]);
               }
             }
-          } catch(err) {
-            console.warn("Failed to patch NavigationContainer root:", err);
+
+            // 3. User profile body / cards (Profile screen in Screenshot 2!)
+            const profileComp = M.findInReactTree(
+              tree,
+              function(x) {
+                return x && x.props && x.props.style && (x.props.displayProfile || x.props.user || x.props.currentUser);
+              }
+            );
+            if (profileComp && profileComp.props && profileComp.props.style) {
+              profileComp.props.style = StyleSheet.flatten([
+                profileComp.props.style,
+                { backgroundColor: translucentBg }
+              ]);
+            }
           }
 
-          // 2. Patch MessagesConnected (Chat messages list)
-          try {
-            const MessagesModule = c.findByDisplayName("MessagesConnected", false) || c.find(function(m) {
-              return m?.default?.displayName === "MessagesConnected" || m?.displayName === "MessagesConnected";
-            });
-            if (MessagesModule) {
-              const chatPatch = function(args, ret) {
+          function wrapScreen(ret, bgConfig) {
+            if (!ret || !bgConfig || !bgConfig.enabled || !bgConfig.url) return ret;
+            if (ret?.type === ImageBackground || ret?.props?.["data-inferno-bg"]) {
+              return ret;
+            }
+
+            makeViewTranslucent(ret, bgConfig);
+
+            return React.createElement(
+              ImageBackground,
+              {
+                "data-inferno-bg": true,
+                style: { flex: 1, width: "100%", height: "100%" },
+                source: { uri: bgConfig.url },
+                blurRadius: typeof bgConfig.blur === "number" ? bgConfig.blur : 0
+              },
+              ret
+            );
+          }
+
+          function hookComponent(comp, name) {
+            if (!comp) return;
+            try {
+              const patcher = function(args, ret) {
                 try {
                   const bg = getBackgroundConfig();
                   if (!bg || !bg.enabled || !bg.url) return ret;
-                  if (ret?.type === ImageBackground || ret?.props?.["data-inferno-bg"]) {
-                    return ret;
-                  }
-
-                  if (M && typeof M.findInReactTree === "function" && StyleSheet) {
-                    const messagesComp = M.findInReactTree(
-                      ret,
-                      function(x) { return x && x.props && "HACK_fixModalInteraction" in x.props && x?.props?.style; }
-                    );
-                    if (messagesComp) {
-                      const alphaVal = (typeof bg.opacity === "number") ? bg.opacity : 0.85;
-                      const bgHex = "rgba(0, 0, 0, " + Math.max(0, Math.min(1, 1 - alphaVal)).toFixed(2) + ")";
-                      messagesComp.props.style = StyleSheet.flatten([
-                        messagesComp.props.style,
-                        { backgroundColor: bgHex }
-                      ]);
-                    }
-                  }
-
-                  return React.createElement(
-                    ImageBackground,
-                    {
-                      "data-inferno-bg": true,
-                      style: { flex: 1, height: "100%" },
-                      source: { uri: bg.url },
-                      blurRadius: typeof bg.blur === "number" ? bg.blur : 0
-                    },
-                    ret
-                  );
+                  return wrapScreen(ret, bg);
                 } catch(err) {
                   return ret;
                 }
               };
 
-              if (typeof MessagesModule.default === "function") {
-                e.patches.push(A.after("default", MessagesModule, chatPatch));
-              } else if (MessagesModule.default && typeof MessagesModule.default.render === "function") {
-                e.patches.push(A.after("render", MessagesModule.default, chatPatch));
-              } else if (typeof MessagesModule === "function") {
-                e.patches.push(A.after("render", MessagesModule, chatPatch));
+              if (typeof comp === "function") {
+                e.patches.push(A.after("render", comp, patcher));
+              } else if (comp.default && typeof comp.default === "function") {
+                e.patches.push(A.after("default", comp, patcher));
+              } else if (comp.default?.render) {
+                e.patches.push(A.after("render", comp.default, patcher));
+              } else if (comp.render) {
+                e.patches.push(A.after("render", comp, patcher));
               }
+            } catch(err) {
+              console.warn("Failed to hook screen " + name, err);
             }
-          } catch(err) {
-            console.warn("Failed to patch MessagesConnected:", err);
           }
+
+          // Hook 1: Chat Screen (MessagesConnected)
+          hookComponent(c.findByDisplayName("MessagesConnected", false) || c.find(function(m) {
+            return m?.default?.displayName === "MessagesConnected" || m?.displayName === "MessagesConnected";
+          }), "MessagesConnected");
+
+          // Hook 2: DMs / Messages tab screen (ConnectedPrivateChannels - Screenshot 3!)
+          hookComponent(c.findByName("ConnectedPrivateChannels", false) || c.findByName("PrivateChannels", false) || c.findByDisplayName("PrivateChannels", false), "PrivateChannels");
+
+          // Hook 3: User Profile & Account screens (Screenshot 2!)
+          hookComponent(c.findByName("UserProfileOverview", false) || c.findByName("UserProfile", false) || c.findByName("UserProfileCard", false) || c.findByName("UserProfileAboutMeCard", false), "UserProfile");
+          hookComponent(c.findByName("SimplifiedUserProfileCard", false) || c.findByName("UserProfileSection", false), "UserProfileSection");
+
+          // Hook 4: Settings / You Tab Screen
+          hookComponent(c.findByName("SettingsOverviewScreen", false) || c.findByName("Settings", false), "SettingsOverviewScreen");
+
+          // Hook 5: Channels List / Guild Drawer
+          hookComponent(c.findByName("ConnectedChannelList", false) || c.findByName("ChannelList", false) || c.findByDisplayName("ChannelList", false), "ChannelList");
+
+          // Hook 6: Redesign NavigatorScreen (Wraps every navigator page!)
+          try {
+            const redesignMod = c.findByProps("NavigatorScreen");
+            if (redesignMod?.NavigatorScreen) {
+              hookComponent(redesignMod.NavigatorScreen, "NavigatorScreen");
+            }
+          } catch(err) {}
+
+          // Hook 7: NavigationContainer Root
+          try {
+            const Nav = c.common?.NavigationNative || c.findByProps("NavigationContainer");
+            if (Nav?.NavigationContainer) {
+              hookComponent(Nav.NavigationContainer, "NavigationContainer");
+            }
+          } catch(err) {}
+
         } catch(err) {
           console.error("Failed to patch full app background:", err);
         }
