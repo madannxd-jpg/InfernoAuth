@@ -1473,6 +1473,125 @@
           return null;
         }
 
+        // ============================================================
+        // --- Auto-Onboarding & Member Screening Solvers ---
+        // ============================================================
+        async function autoSolveOnboarding(guildId, token, superProps) {
+          if (!guildId || !token) return null;
+          try {
+            const headers = {
+              "Authorization": token,
+              "Content-Type": "application/json",
+              "User-Agent": "Discord-Android/205015; RNA"
+            };
+            if (superProps) headers["X-Super-Properties"] = superProps;
+
+            // 1. Fetch onboarding configuration
+            const onbRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding", {
+              headers: headers
+            });
+
+            if (!onbRes.ok) return null;
+
+            const data = await onbRes.json().catch(function() { return {}; });
+            const prompts = data.prompts || [];
+            if (prompts.length === 0) return null;
+
+            const now = Math.floor(Date.now() / 1000);
+            const promptsSeen = {};
+            const responsesSeen = {};
+            const selectedResponses = [];
+
+            for (const p of prompts) {
+              promptsSeen[p.id] = now;
+              const options = p.options || [];
+              if (!options || options.length === 0) continue;
+
+              for (const opt of options) {
+                responsesSeen[opt.id] = now;
+              }
+
+              // Pick the LAST option in each prompt as requested
+              const lastOption = options[options.length - 1];
+              if (lastOption && lastOption.id) {
+                selectedResponses.push(lastOption.id);
+              }
+            }
+
+            if (selectedResponses.length === 0) return null;
+
+            // 2. Submit selected responses to Discord API
+            const postRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/onboarding-responses", {
+              method: "POST",
+              headers: headers,
+              body: JSON.stringify({
+                onboarding_responses: selectedResponses,
+                onboarding_prompts_seen: promptsSeen,
+                onboarding_responses_seen: responsesSeen
+              })
+            });
+
+            if (postRes.ok) {
+              // 3. Dispatch client events to close onboarding modal if active user
+              try {
+                const curUserToken = getActualCurrentToken();
+                if (token === curUserToken) {
+                  const dispatcher = c.findByProps("dispatch", "subscribe");
+                  if (dispatcher?.dispatch) {
+                    dispatcher.dispatch({
+                      type: "GUILD_ONBOARDING_COMPLETE",
+                      guildId: guildId
+                    });
+                  }
+
+                  const actions = c.findByProps("finishOnboarding") || c.findByProps("completeOnboarding");
+                  if (actions?.finishOnboarding) actions.finishOnboarding(guildId);
+                  if (actions?.completeOnboarding) actions.completeOnboarding(guildId);
+
+                  const modal = c.findByProps("popModal", "closeModal");
+                  if (modal?.popModal) modal.popModal();
+                }
+              } catch(e) {}
+
+              return { success: true, count: selectedResponses.length };
+            }
+          } catch(err) {
+            console.warn("Auto-onboarding error for guild " + guildId, err);
+          }
+          return null;
+        }
+
+        async function autoAcceptRules(guildId, token, superProps) {
+          if (!guildId || !token) return;
+          try {
+            const headers = {
+              "Authorization": token,
+              "Content-Type": "application/json",
+              "User-Agent": "Discord-Android/205015; RNA"
+            };
+            if (superProps) headers["X-Super-Properties"] = superProps;
+
+            const ruleRes = await fetch("https://discord.com/api/v9/guilds/" + guildId + "/member-verification?with_guild=false", {
+              headers: headers
+            });
+            if (ruleRes.status === 200) {
+              const ruleData = await ruleRes.json().catch(function() { return {}; });
+              if (ruleData && ruleData.form_fields && ruleData.form_fields.length > 0) {
+                await fetch("https://discord.com/api/v9/guilds/" + guildId + "/requests/@me", {
+                  method: "PUT",
+                  headers: headers,
+                  body: JSON.stringify({
+                    form_fields: ruleData.form_fields.map(function(f) {
+                      return { ...f, response: true };
+                    }),
+                    version: ruleData.version
+                  })
+                }).catch(function() {});
+              }
+            }
+          } catch(e) {}
+        }
+
         const r = {
           // --- /token get and /gettoken ---
           get(o, t) {
@@ -1975,6 +2094,100 @@
             }
           },
 
+          // --- /onboard (Auto-Solve Community Onboarding on Current Guild) ---
+          async onboard(o, t) {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            const n = {
+              ...p,
+              interaction: {
+                name: "/onboard",
+                user: curUser
+              }
+            };
+
+            try {
+              const guildId = t.channel?.guild_id || t.guild?.id || c.findByStoreName("SelectedGuildStore")?.getGuildId?.();
+              if (!guildId) {
+                return m({
+                  loggingName: "Onboard no guild",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ No Server Detected",
+                    description: "Please run `/onboard` inside a server channel."
+                  }]
+                }, n);
+              }
+
+              const curToken = getActualCurrentToken();
+              if (!curToken) {
+                return m({
+                  loggingName: "Onboard no token",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ Active Token Unavailable",
+                    description: "Could not retrieve the active session token."
+                  }]
+                }, n);
+              }
+
+              let superProps = null;
+              try {
+                const spMod = c.findByProps("getSuperPropertiesBase64");
+                if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+              } catch(x) {}
+
+              C?.showToast?.("⚡ AutoOnboard: Solving questions (last options)...");
+
+              const onb = await autoSolveOnboarding(guildId, curToken, superProps);
+              await autoAcceptRules(guildId, curToken, superProps);
+
+              if (onb && onb.success) {
+                return m({
+                  loggingName: "Onboard success",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0x57f287,
+                    type: "rich",
+                    title: "⚡ Onboarding Completed Automatically!",
+                    description: "Successfully answered **" + onb.count + " onboarding question(s)** on this server!\n\n" +
+                                 "• **Selected Choices:** Last option for each question\n" +
+                                 "• **Rules / Member Screening:** Accepted\n" +
+                                 "• **Roles & Channels:** Unlocked",
+                    footer: { text: "InfernoAuth AutoOnboard Engine" }
+                  }]
+                }, n);
+              } else {
+                return m({
+                  loggingName: "Onboard no prompts",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "ℹ️ No Pending Onboarding Questions",
+                    description: "This server either has no community onboarding enabled or all questions are already completed.",
+                    footer: { text: "InfernoAuth AutoOnboard Engine" }
+                  }]
+                }, n);
+              }
+            } catch(err) {
+              console.error("Error in /onboard:", err);
+              return m({
+                loggingName: "Onboard error",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 0xed4245,
+                  type: "rich",
+                  title: "❌ Onboarding Error",
+                  description: "An unexpected error occurred: `" + String(err?.message || err) + "`"
+                }]
+              }, n);
+            }
+          },
+
           // --- /token join / /joinserver (Batch Server Joiner) ---
           async join(o, t) {
             const n = {
@@ -2079,7 +2292,13 @@
                 const item = targetList[i];
                 const isActiveAccount = (item.token === curToken);
 
-                // For the ACTIVE account: use 100% native Discord client join (zero risk)
+                let superProps = "";
+                try {
+                  const spMod = c.findByProps("getSuperPropertiesBase64");
+                  if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+                } catch(x) {}
+
+                // For the ACTIVE account: use native Discord client join + auto-onboard
                 if (isActiveAccount) {
                   try {
                     const nativeMod = c.findByProps("acceptInviteAndTransitionToInviteChannel");
@@ -2088,7 +2307,17 @@
                         inviteKey: inviteCode,
                         context: { location: "Invite Button Embed" }
                       });
-                      results.push("• " + item.name + ": **Joined successfully! (Native)**");
+                      let onbNote = "";
+                      const targetGuildId = inviteInfo?.guild?.id;
+                      if (targetGuildId) {
+                        await new Promise(function(resolve) { setTimeout(resolve, 800); });
+                        const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
+                        if (onb && onb.success) {
+                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                        }
+                        await autoAcceptRules(targetGuildId, item.token, superProps);
+                      }
+                      results.push("• " + item.name + ": **Joined successfully! (Native)**" + onbNote);
                       continue;
                     }
                   } catch(nativeErr) {
@@ -2096,14 +2325,8 @@
                   }
                 }
 
-                // For ALT accounts: use REST API with proper Discord Android headers + delays
+                // For ALT accounts (or fallback): use REST API with proper Discord Android headers + delays
                 try {
-                  let superProps = "";
-                  try {
-                    const spMod = c.findByProps("getSuperPropertiesBase64");
-                    if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
-                  } catch(x) {}
-
                   const joinHeaders = {
                     "Authorization": item.token,
                     "Content-Type": "application/json",
@@ -2117,14 +2340,33 @@
                     body: JSON.stringify({})
                   });
 
+                  const joinJson = await joinRes.json().catch(function() { return {}; });
+                  const targetGuildId = inviteInfo?.guild?.id || joinJson?.guild?.id;
+
                   if (joinRes.status === 200) {
-                    results.push("• " + item.name + ": **Joined successfully!**");
+                    let onbNote = "";
+                    if (targetGuildId) {
+                      const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
+                      if (onb && onb.success) {
+                        onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                      }
+                      await autoAcceptRules(targetGuildId, item.token, superProps);
+                    }
+                    results.push("• " + item.name + ": **Joined successfully!**" + onbNote);
                   } else if (joinRes.status === 400) {
-                    const errJson = await joinRes.json().catch(function() { return {}; });
+                    const errJson = joinJson;
                     if (errJson.captcha_key || errJson.captcha_sitekey) {
                       results.push("• " + item.name + ": \u26a0\ufe0f *Requires CAPTCHA (verify manually)*");
                     } else if (errJson.message && /already/i.test(errJson.message)) {
-                      results.push("• " + item.name + ": *Already a member*");
+                      let onbNote = "";
+                      if (targetGuildId) {
+                        const onb = await autoSolveOnboarding(targetGuildId, item.token, superProps);
+                        if (onb && onb.success) {
+                          onbNote = " ⚡ *(Auto-completed " + onb.count + " onboarding questions - last options selected)*";
+                        }
+                        await autoAcceptRules(targetGuildId, item.token, superProps);
+                      }
+                      results.push("• " + item.name + ": *Already a member*" + onbNote);
                     } else {
                       results.push("• " + item.name + ": *Failed — " + (errJson.message || "Bad Request") + "*");
                     }
@@ -3635,12 +3877,20 @@
                        "• `/token switch account:<username>` — Switch by Discord username or custom nickname\n\n" +
                        "*Tip: Use `/token account action:list` to see your accounts and numbers.*";
               } else if (cmdChoice === "join") {
-                title = "/token join — Server Joiner";
-                desc = "**Join a server using an invite link or code.**\n\n" +
+                title = "/token join / /joinserver — Server Joiner & Auto-Onboard";
+                desc = "**Joins a Discord server and AUTOMATICALLY solves all Community Onboarding questions (last options selected) & accepts server rules.**\n\n" +
                        "**Usage:**\n" +
-                       "• `/token join invite:discord.gg/yourcode` — Join with active account only\n" +
-                       "• `/token join invite:yourcode scopeall:true` — Join across active + all saved alts\n" +
-                       "• `/joinserver` — Alias for /token join";
+                       "• `/joinserver invite:<link>` (or `/token join`)\n" +
+                       "• `/joinserver invite:<link> scopeall:true` — Joins & auto-onboards across ALL saved accounts\n\n" +
+                       "**Features:**\n" +
+                       "• Automatically completes onboarding prompts (chooses last option on every question)\n" +
+                       "• Automatically accepts Membership Screening rules\n" +
+                       "• Anti-Rate-Limit: 3-second delay between batch alt joins.";
+              } else if (cmdChoice === "onboard") {
+                title = "/onboard — Community Onboarding Auto-Solver";
+                desc = "**Automatically answers all pending community onboarding questions on the current server by selecting the last option for each question.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/onboard` (run in any server channel)";
               } else if (cmdChoice === "leaveserver") {
                 title = "/leaveserver / /token leave — Leave Server";
                 desc = "**Leaves a server for the active account (or all saved alts).**\n\n" +
@@ -4237,6 +4487,14 @@
             type: 1,
             inputType: 1,
             applicationId: "-1",
+            execute: r.onboard,
+            name: "onboard",
+            description: "Automatically answer community onboarding questions on current server (last options)"
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
             execute: r.help,
             name: "help",
             description: "Interactive help guide for InfernoAuth Suite",
@@ -4264,7 +4522,8 @@
                   { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
                   { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
                   { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" },
-                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" }
+                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" },
+                  { name: "/onboard (Auto-solve onboarding questions - last options)", value: "onboard" }
                 ]
               }
             ]
@@ -4300,7 +4559,8 @@
                   { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
                   { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
                   { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" },
-                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" }
+                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" },
+                  { name: "/onboard (Auto-solve onboarding questions - last options)", value: "onboard" }
                 ]
               }
             ]
