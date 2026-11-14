@@ -3273,6 +3273,15 @@
               const channelInput = optMap.get("channelid")?.value || optMap.get("channel")?.value;
               const accInput = (optMap.get("accounts")?.value || optMap.get("account")?.value || "").trim();
 
+              let count = 1;
+              const countVal = optMap.get("count")?.value;
+              if (countVal !== undefined && countVal !== null) {
+                const parsedCount = parseInt(countVal, 10);
+                if (!isNaN(parsedCount) && parsedCount > 0) {
+                  count = Math.min(parsedCount, 100);
+                }
+              }
+
               if (!msgInput || !msgInput.trim()) {
                 return m({
                   loggingName: "Sendmsg missing content",
@@ -3418,61 +3427,99 @@
                 C?.showToast?.("Sending message from " + targetAccounts.length + " accounts...");
               }
 
-              const results = [];
-              let successCount = 0;
+              const accountResults = new Map();
+              let totalSent = 0;
               let firstMsgLink = "";
 
-              for (const acc of targetAccounts) {
-                try {
-                  const nonce = Math.floor((Date.now() - 1420070400000) * 4194304).toString();
-                  const headers = {
-                    "Authorization": acc.token,
-                    "Content-Type": "application/json",
-                    "User-Agent": "Discord-Android/205015; RNA"
-                  };
-                  if (superProps) headers["X-Super-Properties"] = superProps;
-
-                  const res = await fetch("https://discord.com/api/v9/channels/" + targetChannelId + "/messages", {
-                    method: "POST",
-                    headers: headers,
-                    body: JSON.stringify({
-                      content: contentText,
-                      nonce: nonce,
-                      tts: false,
-                      flags: 0
-                    })
-                  });
-
-                  if (res.status === 200) {
-                    const sentMsg = await res.json().catch(function() { return {}; });
-                    successCount++;
-                    const guildId = t.channel?.guild_id || t.guild?.id || "@me";
-                    const link = sentMsg?.id ? "https://discord.com/channels/" + guildId + "/" + targetChannelId + "/" + sentMsg.id : "";
-                    if (!firstMsgLink && link) firstMsgLink = link;
-                    results.push("• " + acc.name + ": ✅ **Sent**" + (link ? " ([View](" + link + "))" : ""));
-                  } else if (res.status === 403) {
-                    results.push("• " + acc.name + ": ❌ Missing permissions (403)");
-                  } else if (res.status === 404) {
-                    results.push("• " + acc.name + ": ❌ Channel not found (404)");
-                  } else if (res.status === 429) {
-                    results.push("• " + acc.name + ": ⚠️ Rate limited (429)");
-                  } else {
-                    const errData = await res.json().catch(function() { return {}; });
-                    results.push("• " + acc.name + ": ❌ Error " + res.status + " (" + (errData?.message || "Failed") + ")");
-                  }
-                } catch(fetchErr) {
-                  results.push("• " + acc.name + ": ❌ Network error (" + String(fetchErr?.message || fetchErr) + ")");
-                }
-
-                if (targetAccounts.length > 1) {
-                  await new Promise(function(resolve) { setTimeout(resolve, 350); });
-                }
+              if (targetAccounts.length > 1 || count > 1) {
+                const totalTarget = targetAccounts.length * count;
+                C?.showToast?.("⚡ Dispatching " + totalTarget + " messages in parallel (" + targetAccounts.length + " accounts × " + count + ")...");
               }
 
-              const previewMsg = contentText.length > 250 ? contentText.slice(0, 247) + "..." : contentText;
+              // All accounts execute concurrently in parallel
+              await Promise.all(targetAccounts.map(async function(acc) {
+                let accSent = 0;
+                let lastLink = "";
+                let statusNote = "";
 
-              if (targetAccounts.length === 1) {
-                const isSuccess = successCount === 1;
+                // Each account sends count messages sequentially with safe delay
+                for (let i = 0; i < count; i++) {
+                  try {
+                    const nonce = Math.floor((Date.now() - 1420070400000) * 4194304).toString();
+                    const headers = {
+                      "Authorization": acc.token,
+                      "Content-Type": "application/json",
+                      "Accept": "*/*"
+                    };
+                    if (superProps) headers["X-Super-Properties"] = superProps;
+
+                    const res = await fetch("https://discord.com/api/v9/channels/" + targetChannelId + "/messages", {
+                      method: "POST",
+                      headers: headers,
+                      body: JSON.stringify({
+                        content: contentText,
+                        nonce: nonce,
+                        tts: false,
+                        flags: 0
+                      })
+                    });
+
+                    if (res.status === 200) {
+                      accSent++;
+                      totalSent++;
+                      const sentMsg = await res.json().catch(function() { return {}; });
+                      const guildId = t.channel?.guild_id || t.guild?.id || "@me";
+                      const link = sentMsg?.id ? "https://discord.com/channels/" + guildId + "/" + targetChannelId + "/" + sentMsg.id : "";
+                      if (link) lastLink = link;
+                      if (!firstMsgLink && link) firstMsgLink = link;
+                    } else if (res.status === 429) {
+                      const errData = await res.json().catch(function() { return {}; });
+                      const retryAfter = errData?.retry_after || 1.5;
+                      statusNote = "Rate limited (429)";
+                      await new Promise(function(resolve) { setTimeout(resolve, Math.ceil(retryAfter * 1000) + 200); });
+                    } else if (res.status === 403) {
+                      statusNote = "Missing permissions (403)";
+                      break;
+                    } else if (res.status === 404) {
+                      statusNote = "Channel not found (404)";
+                      break;
+                    } else {
+                      const errData = await res.json().catch(function() { return {}; });
+                      statusNote = "Error " + res.status + " (" + (errData?.message || "Failed") + ")";
+                    }
+                  } catch(fetchErr) {
+                    statusNote = "Network error (" + String(fetchErr?.message || fetchErr) + ")";
+                  }
+
+                  // Small sequential delay between consecutive messages for THIS account
+                  if (i < count - 1) {
+                    await new Promise(function(resolve) { setTimeout(resolve, 1100); });
+                  }
+                }
+
+                let line = "• " + acc.name + ": ";
+                if (accSent === count) {
+                  line += "✅ **" + (count > 1 ? count + "/" + count + " Sent" : "Sent") + "**";
+                } else if (accSent > 0) {
+                  line += "⚠️ **" + accSent + "/" + count + " Sent**" + (statusNote ? " (" + statusNote + ")" : "");
+                } else {
+                  line += "❌ **Failed**" + (statusNote ? " (" + statusNote + ")" : "");
+                }
+                if (lastLink) {
+                  line += " ([View](" + lastLink + "))";
+                }
+                accountResults.set(acc.token, line);
+              }));
+
+              const results = targetAccounts.map(function(acc) {
+                return accountResults.get(acc.token) || ("• " + acc.name + ": ❌ Unknown status");
+              });
+
+              const previewMsg = contentText.length > 250 ? contentText.slice(0, 247) + "..." : contentText;
+              const totalExpected = targetAccounts.length * count;
+
+              if (targetAccounts.length === 1 && count === 1) {
+                const isSuccess = totalSent === 1;
                 return m({
                   loggingName: "Sendmsg single result",
                   channelId: t.channel.id,
@@ -3492,14 +3539,16 @@
                   loggingName: "Sendmsg multi result",
                   channelId: t.channel.id,
                   embeds: [{
-                    color: successCount > 0 ? 0x57f287 : 0xed4245,
+                    color: totalSent > 0 ? 0x57f287 : 0xed4245,
                     type: "rich",
-                    title: "✉️ Multi-Account Broadcast (" + successCount + "/" + targetAccounts.length + " Sent)",
+                    title: "✉️ Message Dispatcher (" + totalSent + "/" + totalExpected + " Sent in Parallel)",
                     description: "• **Target Channel:** <#" + targetChannelId + "> (`" + targetChannelId + "`)\n" +
+                                 "• **Count per Account:** `" + count + "` (Sequential per token)\n" +
+                                 "• **Mode:** Parallel execution across " + targetAccounts.length + " account(s)\n" +
                                  "• **Message:** " + previewMsg + "\n\n" +
                                  "**Account Status:**\n" +
                                  results.join("\n"),
-                    footer: { text: "InfernoAuth Broadcast Engine" }
+                    footer: { text: "InfernoAuth Parallel Broadcast Engine" }
                   }]
                 }, n);
               }
@@ -4140,16 +4189,17 @@
                        "**Default Scopes:** `bot applications.commands guilds.join`";
               } else if (cmdChoice === "sendmsg" || cmdChoice === "sendmessage") {
                 title = "/sendmsg & /sendmessage — Message Dispatcher";
-                desc = "**Send any message to a specific channel ID using your active account or broadcast across all saved accounts.**\n\n" +
+                desc = "**Send any message to a specific channel ID using your active account or broadcast across all saved accounts in parallel.**\n\n" +
                        "**Usage:**\n" +
                        "• `/sendmsg msg:Hello world` — Send to current channel with active account\n" +
                        "• `/sendmsg msg:Hello channelid:123456789012345678` — Send to specific channel\n" +
-                       "• `/sendmsg msg:Broadcast test accounts:all` — Broadcast message from ALL accounts\n" +
-                       "• `/sendmsg msg:Test accounts:alt1` — Send from a specific saved alt\n\n" +
+                       "• `/sendmsg msg:Broadcast test accounts:all` — Broadcast message from ALL accounts in parallel\n" +
+                       "• `/sendmsg msg:Spam count:5 accounts:all` — Each account sends 5 times sequentially, all accounts run concurrently in parallel\n\n" +
                        "**Parameters:**\n" +
                        "• `msg` (Required): Message text\n" +
                        "• `channelid` (Optional): Target channel snowflake ID (defaults to current channel)\n" +
-                       "• `accounts` (Optional): `'all'`, `'active'`, or specific alt nickname/#number";
+                       "• `accounts` (Optional): `'all'`, `'active'`, or specific alt nickname/#number\n" +
+                       "• `count` (Optional): Number of times each token sends the message sequentially (default: 1, parallel across alts)";
               } else if (cmdChoice === "background" || cmdChoice === "backgroundreset") {
                 title = "/background & /backgroundreset — Custom Backgrounds";
                 desc = "**Customize your Discord chat background with custom images or frosted glass aesthetics.**\n\n" +
@@ -4627,6 +4677,12 @@
                   { name: "all (Send from ALL saved accounts + active)", value: "all" },
                   { name: "active (Current active account only)", value: "active" }
                 ]
+              },
+              {
+                required: false,
+                type: 4,
+                name: "count",
+                description: "Number of times each token sends this message sequentially (default: 1, parallel across alts)"
               }
             ]
           }),
@@ -4659,6 +4715,12 @@
                   { name: "all (Send from ALL saved accounts + active)", value: "all" },
                   { name: "active (Current active account only)", value: "active" }
                 ]
+              },
+              {
+                required: false,
+                type: 4,
+                name: "count",
+                description: "Number of times each token sends this message sequentially (default: 1, parallel across alts)"
               }
             ]
           }),

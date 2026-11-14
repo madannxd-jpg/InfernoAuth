@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: /joinserver & /token join with Auto-Onboarding & Screen Suppressor (picks last option on all questions) & /onboard, /sendmsg (Dispatch messages via active or all accounts), Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: /sendmsg with multi-count & parallel alt dispatch, /joinserver & /token join with Auto-Onboarding & Screen Suppressor, Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "853cf66a59d5c9ab88c86ee91c23be7f74093230c757d59b6b3160758d3820af"
+  "hash": "742f460fa6ad002f04e4a97c19578ec495caa5885e5b1f670350b1de0c29bbbf"
 }
