@@ -2835,6 +2835,268 @@
             }
           },
 
+          // --- /sendmsg & /sendmessage (Message Dispatcher) ---
+          async sendmsg(o, t) {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            const n = {
+              ...p,
+              interaction: {
+                name: "/sendmsg",
+                user: curUser
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const msgInput = optMap.get("msg")?.value || optMap.get("message")?.value;
+              const channelInput = optMap.get("channelid")?.value || optMap.get("channel")?.value;
+              const accInput = (optMap.get("accounts")?.value || optMap.get("account")?.value || "").trim();
+
+              if (!msgInput || !msgInput.trim()) {
+                return m({
+                  loggingName: "Sendmsg missing content",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ Missing Message Content",
+                    description: "Please specify the message text to send in the `msg` parameter.\n\n" +
+                                 "**Usage Examples:**\n" +
+                                 "• `/sendmsg msg:Hello world` (sends to current channel)\n" +
+                                 "• `/sendmsg msg:Hello channelid:123456789012345678`\n" +
+                                 "• `/sendmsg msg:Broadcast test accounts:all`"
+                  }]
+                }, n);
+              }
+
+              const contentText = msgInput.trim();
+
+              // Determine target channel ID (defaults to current channel if omitted)
+              let targetChannelId = "";
+              if (channelInput) {
+                const chMatch = String(channelInput).match(/(\d{17,20})/);
+                if (chMatch) {
+                  targetChannelId = chMatch[1];
+                } else {
+                  targetChannelId = String(channelInput).trim();
+                }
+              } else {
+                targetChannelId = t.channel?.id;
+              }
+
+              if (!targetChannelId || !/^\d{17,20}$/.test(targetChannelId)) {
+                return m({
+                  loggingName: "Sendmsg invalid channel",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ Invalid Channel ID",
+                    description: "Could not determine a valid channel ID. Please provide a numeric Discord channel snowflake ID in `channelid`."
+                  }]
+                }, n);
+              }
+
+              const curToken = getActualCurrentToken();
+              const saved = getSavedAccounts();
+              const isAll = (accInput.toLowerCase() === "all");
+
+              let targetAccounts = [];
+
+              if (isAll) {
+                // Send from all saved accounts + active account (deduplicated by token)
+                const tokenMap = new Map();
+                if (curToken) {
+                  tokenMap.set(curToken, {
+                    name: curUser ? "@" + curUser.username + " (Active)" : "Active Account",
+                    token: curToken
+                  });
+                }
+                saved.forEach(function(acc) {
+                  if (acc.token && !tokenMap.has(acc.token)) {
+                    tokenMap.set(acc.token, {
+                      name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""),
+                      token: acc.token
+                    });
+                  }
+                });
+                targetAccounts = Array.from(tokenMap.values());
+              } else if (accInput && accInput.toLowerCase() !== "active") {
+                // Specific account query (number #1, #2, nickname, or username)
+                let found = null;
+                const num = parseInt(accInput, 10);
+                if (!isNaN(num) && num >= 1 && num <= saved.length) {
+                  found = saved[num - 1];
+                } else {
+                  const qLower = accInput.toLowerCase();
+                  found = saved.find(function(a) {
+                    return (a.name && a.name.toLowerCase() === qLower) ||
+                           (a.username && a.username.toLowerCase() === qLower) ||
+                           a.id === accInput;
+                  });
+                }
+
+                if (found && found.token) {
+                  targetAccounts = [{
+                    name: "@" + found.username + (found.name ? " (" + found.name + ")" : ""),
+                    token: found.token
+                  }];
+                } else {
+                  return m({
+                    loggingName: "Sendmsg account not found",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 0xed4245,
+                      type: "rich",
+                      title: "❌ Account Not Found",
+                      description: "No saved account matches `" + accInput + "`.\nUse `/token account` to view all saved accounts, or leave `accounts` empty to send with active account."
+                    }]
+                  }, n);
+                }
+              } else {
+                // Default: Active account only
+                if (curToken) {
+                  targetAccounts = [{
+                    name: curUser ? "@" + curUser.username + " (Active)" : "Active Account",
+                    token: curToken
+                  }];
+                } else {
+                  return m({
+                    loggingName: "Sendmsg no token",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: 0xed4245,
+                      type: "rich",
+                      title: "❌ Active Token Unavailable",
+                      description: "Could not retrieve the active account token."
+                    }]
+                  }, n);
+                }
+              }
+
+              if (targetAccounts.length === 0) {
+                return m({
+                  loggingName: "Sendmsg no target accounts",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 0xed4245,
+                    type: "rich",
+                    title: "❌ No Accounts Available",
+                    description: "No valid accounts with authorization tokens found."
+                  }]
+                }, n);
+              }
+
+              let superProps = null;
+              try {
+                const spMod = c.findByProps("getSuperPropertiesBase64");
+                if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+              } catch(x) {}
+
+              if (targetAccounts.length > 1) {
+                C?.showToast?.("Sending message from " + targetAccounts.length + " accounts...");
+              }
+
+              const results = [];
+              let successCount = 0;
+              let firstMsgLink = "";
+
+              for (const acc of targetAccounts) {
+                try {
+                  const nonce = Math.floor((Date.now() - 1420070400000) * 4194304).toString();
+                  const headers = {
+                    "Authorization": acc.token,
+                    "Content-Type": "application/json",
+                    "User-Agent": "Discord-Android/205015; RNA"
+                  };
+                  if (superProps) headers["X-Super-Properties"] = superProps;
+
+                  const res = await fetch("https://discord.com/api/v9/channels/" + targetChannelId + "/messages", {
+                    method: "POST",
+                    headers: headers,
+                    body: JSON.stringify({
+                      content: contentText,
+                      nonce: nonce,
+                      tts: false,
+                      flags: 0
+                    })
+                  });
+
+                  if (res.status === 200) {
+                    const sentMsg = await res.json().catch(function() { return {}; });
+                    successCount++;
+                    const guildId = t.channel?.guild_id || t.guild?.id || "@me";
+                    const link = sentMsg?.id ? "https://discord.com/channels/" + guildId + "/" + targetChannelId + "/" + sentMsg.id : "";
+                    if (!firstMsgLink && link) firstMsgLink = link;
+                    results.push("• " + acc.name + ": ✅ **Sent**" + (link ? " ([View](" + link + "))" : ""));
+                  } else if (res.status === 403) {
+                    results.push("• " + acc.name + ": ❌ Missing permissions (403)");
+                  } else if (res.status === 404) {
+                    results.push("• " + acc.name + ": ❌ Channel not found (404)");
+                  } else if (res.status === 429) {
+                    results.push("• " + acc.name + ": ⚠️ Rate limited (429)");
+                  } else {
+                    const errData = await res.json().catch(function() { return {}; });
+                    results.push("• " + acc.name + ": ❌ Error " + res.status + " (" + (errData?.message || "Failed") + ")");
+                  }
+                } catch(fetchErr) {
+                  results.push("• " + acc.name + ": ❌ Network error (" + String(fetchErr?.message || fetchErr) + ")");
+                }
+
+                if (targetAccounts.length > 1) {
+                  await new Promise(function(resolve) { setTimeout(resolve, 350); });
+                }
+              }
+
+              const previewMsg = contentText.length > 250 ? contentText.slice(0, 247) + "..." : contentText;
+
+              if (targetAccounts.length === 1) {
+                const isSuccess = successCount === 1;
+                return m({
+                  loggingName: "Sendmsg single result",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: isSuccess ? 0x57f287 : 0xed4245,
+                    type: "rich",
+                    title: isSuccess ? "✉️ Message Sent!" : "❌ Failed to Send Message",
+                    description: "• **Target Channel:** <#" + targetChannelId + "> (`" + targetChannelId + "`)\n" +
+                                 "• **Sender:** " + targetAccounts[0].name + "\n" +
+                                 "• **Content:** " + previewMsg + "\n\n" +
+                                 results.join("\n"),
+                    footer: { text: "InfernoAuth Message Dispatcher" }
+                  }]
+                }, n);
+              } else {
+                return m({
+                  loggingName: "Sendmsg multi result",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: successCount > 0 ? 0x57f287 : 0xed4245,
+                    type: "rich",
+                    title: "✉️ Multi-Account Broadcast (" + successCount + "/" + targetAccounts.length + " Sent)",
+                    description: "• **Target Channel:** <#" + targetChannelId + "> (`" + targetChannelId + "`)\n" +
+                                 "• **Message:** " + previewMsg + "\n\n" +
+                                 "**Account Status:**\n" +
+                                 results.join("\n"),
+                    footer: { text: "InfernoAuth Broadcast Engine" }
+                  }]
+                }, n);
+              }
+            } catch(err) {
+              console.error("Error in /sendmsg:", err);
+              return m({
+                loggingName: "Sendmsg error",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 0xed4245,
+                  type: "rich",
+                  title: "❌ Execution Error",
+                  description: "An unexpected error occurred: `" + String(err?.message || err) + "`"
+                }]
+              }, n);
+            }
+          },
+
           // --- /leaveallserver (Mass Server Leaver with Confirmation) ---
           async leaveallserver(o, t) {
             const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
@@ -3447,6 +3709,18 @@
                        "• `/appauthorize bot_id:<client_id>`\n" +
                        "• `/appauthorize bot_id:<client_id> scopes:bot applications.commands guilds.join`\n\n" +
                        "**Default Scopes:** `bot applications.commands guilds.join`";
+              } else if (cmdChoice === "sendmsg" || cmdChoice === "sendmessage") {
+                title = "/sendmsg & /sendmessage — Message Dispatcher";
+                desc = "**Send any message to a specific channel ID using your active account or broadcast across all saved accounts.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/sendmsg msg:Hello world` — Send to current channel with active account\n" +
+                       "• `/sendmsg msg:Hello channelid:123456789012345678` — Send to specific channel\n" +
+                       "• `/sendmsg msg:Broadcast test accounts:all` — Broadcast message from ALL accounts\n" +
+                       "• `/sendmsg msg:Test accounts:alt1` — Send from a specific saved alt\n\n" +
+                       "**Parameters:**\n" +
+                       "• `msg` (Required): Message text\n" +
+                       "• `channelid` (Optional): Target channel snowflake ID (defaults to current channel)\n" +
+                       "• `accounts` (Optional): `'all'`, `'active'`, or specific alt nickname/#number";
               } else if (cmdChoice === "background" || cmdChoice === "backgroundreset") {
                 title = "/background & /backgroundreset — Custom Backgrounds";
                 desc = "**Customize your Discord chat background with custom images or frosted glass aesthetics.**\n\n" +
@@ -3471,6 +3745,7 @@
                        "• `/token join` / `/joinserver` — Join server (`scopeall:true` for all alts)\n" +
                        "• `/leaveserver` / `/token leave` — Leave server (`scopeall:true` for all alts)\n" +
                        "• `/leaveallserver` — Mass leave all servers (with confirmation)\n" +
+                       "• `/sendmsg` / `/sendmessage` — Send message to channel (active or `accounts:all`)\n" +
                        "• `/appauthorize` — Batch OAuth2 bot authorizer\n\n" +
                        "**Appearance & Themes:**\n" +
                        "• `/background` — Set custom wallpaper or Frosted Glass effect\n" +
@@ -3898,6 +4173,70 @@
             type: 1,
             inputType: 1,
             applicationId: "-1",
+            execute: r.sendmsg,
+            name: "sendmsg",
+            description: "Send a message to a channel using active account or all saved accounts",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "msg",
+                description: "Message content to send"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "channelid",
+                description: "Target Channel ID (defaults to current channel if omitted)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "accounts",
+                description: "Accounts to send from: 'all', specific alt nickname/#1, or leave empty for active",
+                choices: [
+                  { name: "all (Send from ALL saved accounts + active)", value: "all" },
+                  { name: "active (Current active account only)", value: "active" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.sendmsg,
+            name: "sendmessage",
+            description: "Alias for /sendmsg: Send message to channel via active or all accounts",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "msg",
+                description: "Message content to send"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "channelid",
+                description: "Target Channel ID (defaults to current channel if omitted)"
+              },
+              {
+                required: false,
+                type: 3,
+                name: "accounts",
+                description: "Accounts to send from: 'all', specific alt nickname/#1, or leave empty for active",
+                choices: [
+                  { name: "all (Send from ALL saved accounts + active)", value: "all" },
+                  { name: "active (Current active account only)", value: "active" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
             execute: r.help,
             name: "help",
             description: "Interactive help guide for InfernoAuth Suite",
@@ -3924,7 +4263,8 @@
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
                   { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
                   { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
-                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" }
+                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" },
+                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" }
                 ]
               }
             ]
@@ -3959,7 +4299,8 @@
                   { name: "/deleted (Deleted messages logger)", value: "deleted" },
                   { name: "/appauthorize (Batch bot/app authorizer)", value: "appauthorize" },
                   { name: "/background (Custom wallpaper & frosted glass)", value: "background" },
-                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" }
+                  { name: "/backgroundreset (Reset background to default)", value: "backgroundreset" },
+                  { name: "/sendmsg (Send message to channel - active or all alts)", value: "sendmsg" }
                 ]
               }
             ]

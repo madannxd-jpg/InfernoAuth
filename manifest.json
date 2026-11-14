@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: Universal Background & Frosted Glass across all Discord screens (DMs, Profile, Settings, Channels, Chat), Multi-account manager, /token join & /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: /sendmsg (Dispatch messages via active or all accounts), Universal Background & Frosted Glass, Multi-account manager, /token join & /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "d50ba024f74c961afb59c00143d5a439553fb1c09f79f6680b2ced60341fe9e2"
+  "hash": "61c0ddcb57df1f9caea2c8b9a9f0267890277d3d8b8f1bd196978ead4021fd55"
 }
