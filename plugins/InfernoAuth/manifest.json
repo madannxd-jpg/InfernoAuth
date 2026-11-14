@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: Multi-account manager, /token join batch server joiner, /appauthorize with 'Join servers for you' scope, interactive /help guide, and permanent MMKV deleted messages logger.",
+  "description": "All-in-one suite: Multi-account manager, /token join & /leaveserver with scope control, /leaveallserver confirmation, persistent /showedit history, 4096px /avatar /banner /servericon grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "64cea63985a08fe572339fa5b293c11240e4cd7d6cc52563e751c0a855f53417"
+  "hash": "0486046063a47ac12c55e627e8954e0381c17964c85c1477f0e927800d0aa8d9"
 }

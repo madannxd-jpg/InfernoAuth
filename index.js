@@ -276,6 +276,61 @@
         }
       }
 
+      // --- Persistent Edit History Storage (backed by MMKV) ---
+      function recordMessageEdit(msgId, channelId, author, oldContent, newContent, editTimestamp) {
+        if (!msgId || !oldContent || !newContent || oldContent === newContent) return;
+        try {
+          const st = getStorage();
+          if (!st.editHistory || typeof st.editHistory !== "object") {
+            st.editHistory = {};
+          }
+          const edits = st.editHistory;
+          const now = new Date();
+          const editTimeStr = now.toLocaleTimeString();
+
+          if (!edits[msgId]) {
+            edits[msgId] = {
+              id: msgId,
+              channelId: channelId,
+              author: {
+                id: author?.id || null,
+                username: author?.username || "Unknown",
+                globalName: author?.globalName || author?.global_name || author?.username || "Unknown"
+              },
+              versions: [
+                {
+                  version: 1,
+                  type: "Original",
+                  content: oldContent,
+                  timestamp: Date.now() - 2000,
+                  timeString: "Original"
+                }
+              ]
+            };
+          }
+
+          const vList = edits[msgId].versions;
+          if (vList[vList.length - 1].content !== newContent) {
+            vList.push({
+              version: vList.length + 1,
+              type: "Edit #" + vList.length,
+              content: newContent,
+              timestamp: editTimestamp || Date.now(),
+              timeString: editTimeStr
+            });
+          }
+
+          // Capping: keep last 300 edited messages in MMKV
+          const keys = Object.keys(edits);
+          if (keys.length > 300) {
+            delete edits[keys[0]];
+          }
+          st.editHistory = edits;
+        } catch(e) {
+          console.warn("Failed to record message edit", e);
+        }
+      }
+
       // High-Priority Dispatch Interception: captures deleted messages BEFORE MessageStore removes them!
       try {
         const dispatcher = vendetta?.metro?.common?.FluxDispatcher || c.findByProps("dispatch", "subscribe");
@@ -285,8 +340,25 @@
               const event = args?.[0];
               if (!event || !event.type) return args;
 
+              // Track real-time message edits persistently across app restarts
+              if (event.type === "MESSAGE_UPDATE") {
+                const msg = event.message;
+                if (msg && msg.id && typeof msg.content === "string") {
+                  const msgId = msg.id;
+                  const chId = msg.channel_id || msg.channelId;
+                  const cached = recentMessagesCache.get(msgId);
+                  const oldContent = cached?.content;
+                  const newContent = msg.content;
+                  if (oldContent && newContent && oldContent !== newContent) {
+                    const author = cached.author || msg.author;
+                    recordMessageEdit(msgId, chId, author, oldContent, newContent, msg.edited_timestamp || Date.now());
+                  }
+                  cacheRecentMessage(msg);
+                }
+              }
+
               // Pre-cache newly loaded, created, or updated messages
-              if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
+              if (event.type === "MESSAGE_CREATE") {
                 if (event.message) cacheRecentMessage(event.message);
               } else if (event.type === "LOAD_MESSAGES_SUCCESS" && Array.isArray(event.messages)) {
                 event.messages.forEach(cacheRecentMessage);
@@ -1677,28 +1749,40 @@
 
               const serverName = inviteInfo?.guild?.name || "Server (" + inviteCode + ")";
 
-              // Gather accounts to join: active account + saved accounts (deduplicated by token)
+              const scopeAll = Boolean(optMap.get("scopeall")?.value || optMap.get("all")?.value);
               const curToken = getActualCurrentToken();
               const curUser = c.findByStoreName("UserStore").getCurrentUser();
-              const saved = getSavedAccounts();
 
-              const tokenMap = new Map();
-              if (curToken) {
-                tokenMap.set(curToken, {
-                  name: curUser ? "@" + curUser.username + " (Active)" : "Active User",
-                  token: curToken
-                });
-              }
-              saved.forEach(function(acc) {
-                if (acc.token && !tokenMap.has(acc.token)) {
-                  tokenMap.set(acc.token, {
-                    name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""),
-                    token: acc.token
+              let targetList = [];
+              if (scopeAll) {
+                // Gather active account + all saved accounts (deduplicated by token)
+                const saved = getSavedAccounts();
+                const tokenMap = new Map();
+                if (curToken) {
+                  tokenMap.set(curToken, {
+                    name: curUser ? "@" + curUser.username + " (Active)" : "Active User",
+                    token: curToken
                   });
                 }
-              });
+                saved.forEach(function(acc) {
+                  if (acc.token && !tokenMap.has(acc.token)) {
+                    tokenMap.set(acc.token, {
+                      name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""),
+                      token: acc.token
+                    });
+                  }
+                });
+                targetList = Array.from(tokenMap.values());
+              } else {
+                // Default: ONLY active account
+                if (curToken) {
+                  targetList = [{
+                    name: curUser ? "@" + curUser.username + " (Active)" : "Active User",
+                    token: curToken
+                  }];
+                }
+              }
 
-              const targetList = Array.from(tokenMap.values());
               if (targetList.length === 0) {
                 return m({
                   loggingName: "Join no tokens",
@@ -1806,7 +1890,7 @@
                   type: "rich",
                   title: "Join Results: " + serverName,
                   description: results.join("\n"),
-                  footer: { text: "Active account: native join (safe). Alts: REST API with delay." }
+                  footer: { text: "Scope: " + (scopeAll ? "All Accounts (Active + Alts)" : "Active Account Only") + " • Safe Join" }
                 }]
               }, n);
 
@@ -2164,6 +2248,654 @@
             }
           },
 
+          // --- /leaveserver & /token leave ---
+          async leaveserver(o, t) {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            const n = {
+              ...p,
+              interaction: {
+                name: "/leaveserver",
+                user: curUser
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const serverInput = optMap.get("server")?.value;
+              const scopeAll = Boolean(optMap.get("scopeall")?.value || optMap.get("all")?.value);
+
+              let guildId = serverInput ? String(serverInput).trim() : (t.channel?.guild_id || t.guild?.id);
+              if (!guildId) {
+                return m({
+                  loggingName: "Leave server missing ID",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Missing Server ID",
+                    description: "Please specify a server ID in `server` or run this command inside a server channel."
+                  }]
+                }, n);
+              }
+
+              const GuildStore = c.findByStoreName("GuildStore");
+              const guildObj = GuildStore?.getGuild?.(guildId);
+              const serverName = guildObj?.name || "Server (" + guildId + ")";
+
+              if (guildObj && (guildObj.ownerId === curUser?.id || guildObj.owner)) {
+                return m({
+                  loggingName: "Leave server owner error",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Cannot Leave Owned Server",
+                    description: "You are the owner of **" + serverName + "**. Transfer ownership first before leaving."
+                  }]
+                }, n);
+              }
+
+              let targets = [];
+              const curToken = getActualCurrentToken();
+              if (scopeAll) {
+                const saved = getSavedAccounts();
+                const tokenMap = new Map();
+                if (curToken) tokenMap.set(curToken, { name: curUser ? "@" + curUser.username + " (Active)" : "Active", token: curToken });
+                saved.forEach(function(acc) {
+                  if (acc.token && !tokenMap.has(acc.token)) {
+                    tokenMap.set(acc.token, { name: "@" + acc.username + (acc.name ? " (" + acc.name + ")" : ""), token: acc.token });
+                  }
+                });
+                targets = Array.from(tokenMap.values());
+              } else {
+                if (curToken) targets = [{ name: curUser ? "@" + curUser.username + " (Active)" : "Active", token: curToken }];
+              }
+
+              if (targets.length === 0) {
+                return m({
+                  loggingName: "Leave no tokens",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "No Token Available",
+                    description: "Could not retrieve the current account token."
+                  }]
+                }, n);
+              }
+
+              m({
+                loggingName: "Leave progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "Leaving " + serverName + "...",
+                  description: "Processing leave across **" + targets.length + "** account(s)..."
+                }]
+              }, n);
+
+              const results = [];
+              for (let i = 0; i < targets.length; i++) {
+                const acc = targets[i];
+                try {
+                  const res = await fetch("https://discord.com/api/v9/users/@me/guilds/" + guildId, {
+                    method: "DELETE",
+                    headers: {
+                      "Authorization": acc.token,
+                      "Content-Type": "application/json"
+                    }
+                  });
+
+                  if (res.status === 204 || res.status === 200) {
+                    results.push("• " + acc.name + ": **Left successfully!**");
+                  } else if (res.status === 400) {
+                    const j = await res.json().catch(function() { return {}; });
+                    results.push("• " + acc.name + ": *" + (j.message || "Failed (Owner)") + "*");
+                  } else if (res.status === 404) {
+                    results.push("• " + acc.name + ": *Not in this server*");
+                  } else {
+                    results.push("• " + acc.name + ": *HTTP " + res.status + "*");
+                  }
+                } catch(e) {
+                  results.push("• " + acc.name + ": *Error: " + e.message + "*");
+                }
+
+                if (i < targets.length - 1) {
+                  await new Promise(function(r) { setTimeout(r, 600); });
+                }
+              }
+
+              return m({
+                loggingName: "Leave complete",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 3066993,
+                  type: "rich",
+                  title: "Leave Results: " + serverName,
+                  description: results.join("\n"),
+                  footer: { text: "Scope: " + (scopeAll ? "All Accounts" : "Active Account Only") }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Leave exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /leaveserver",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /leaveallserver (Mass Server Leaver with Confirmation) ---
+          async leaveallserver(o, t) {
+            const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+            const n = {
+              ...p,
+              interaction: {
+                name: "/leaveallserver",
+                user: curUser
+              }
+            };
+
+            try {
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const confirmVal = (optMap.get("confirm")?.value || "").toLowerCase().trim();
+
+              if (confirmVal !== "yes") {
+                return m({
+                  loggingName: "LeaveAll confirmation required",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "⚠️ Confirmation Required: Leave ALL Servers",
+                    description: "You are about to leave **EVERY SERVER** joined by @" + (curUser?.username || "this account") + "!\n\n" +
+                                 "• **Servers you own** will be automatically protected and skipped.\n" +
+                                 "• This action **cannot be undone**.\n\n" +
+                                 "👉 **To confirm and proceed, run:**\n`/leaveallserver confirm:yes`",
+                    footer: { text: "InfernoAuth Safety Guard" }
+                  }]
+                }, n);
+              }
+
+              const curToken = getActualCurrentToken();
+              if (!curToken) {
+                return m({
+                  loggingName: "LeaveAll missing token",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Token Not Found",
+                    description: "Could not retrieve current account token from memory."
+                  }]
+                }, n);
+              }
+
+              let guilds = [];
+              try {
+                const GuildStore = c.findByStoreName("GuildStore");
+                const gMap = GuildStore?.getGuilds?.();
+                if (gMap && typeof gMap === "object") {
+                  guilds = Object.values(gMap);
+                }
+              } catch(e) {}
+
+              if (guilds.length === 0) {
+                try {
+                  const gRes = await fetch("https://discord.com/api/v9/users/@me/guilds", {
+                    headers: { "Authorization": curToken }
+                  });
+                  if (gRes.status === 200) guilds = await gRes.json();
+                } catch(e) {}
+              }
+
+              if (guilds.length === 0) {
+                return m({
+                  loggingName: "LeaveAll no guilds",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "No Servers Found",
+                    description: "This account is not in any servers."
+                  }]
+                }, n);
+              }
+
+              C?.showToast?.("Leaving " + guilds.length + " servers...");
+              m({
+                loggingName: "LeaveAll progress",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Leaving All Servers...",
+                  description: "Processing **" + guilds.length + "** servers. Owned servers are automatically protected."
+                }]
+              }, n);
+
+              let leftCount = 0;
+              let skippedCount = 0;
+              let failedCount = 0;
+
+              for (let i = 0; i < guilds.length; i++) {
+                const g = guilds[i];
+                if (g.owner || g.ownerId === curUser?.id || g.owner_id === curUser?.id) {
+                  skippedCount++;
+                  continue;
+                }
+
+                try {
+                  const res = await fetch("https://discord.com/api/v9/users/@me/guilds/" + g.id, {
+                    method: "DELETE",
+                    headers: {
+                      "Authorization": curToken,
+                      "Content-Type": "application/json"
+                    }
+                  });
+                  if (res.status === 204 || res.status === 200) {
+                    leftCount++;
+                  } else {
+                    failedCount++;
+                  }
+                } catch(e) {
+                  failedCount++;
+                }
+
+                if (i < guilds.length - 1) {
+                  await new Promise(function(r) { setTimeout(r, 400); });
+                }
+              }
+
+              return m({
+                loggingName: "LeaveAll completed",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 3066993,
+                  type: "rich",
+                  title: "Mass Leave Complete",
+                  description: "• Left servers: **" + leftCount + "**\n" +
+                               "• Protected (owned): **" + skippedCount + "**\n" +
+                               (failedCount > 0 ? "• Failed / Rate-limited: **" + failedCount + "**\n" : "") + "\n" +
+                               "Finished clearing servers for @" + (curUser?.username || "user") + "."
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "LeaveAll exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /leaveallserver",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /showedit <msgid> (Restart-Persistent Edit History) ---
+          showedit(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/showedit",
+                  user: curUser
+                }
+              };
+
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const msgId = optMap.get("msgid")?.value;
+
+              if (!msgId || typeof msgId !== "string") {
+                return m({
+                  loggingName: "ShowEdit missing ID",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Missing Message ID",
+                    description: "Please specify the message ID: `/showedit msgid:<message_id>`"
+                  }]
+                }, n);
+              }
+
+              const cleanId = msgId.trim();
+              const st = getStorage();
+              const edits = st.editHistory || {};
+              const record = edits[cleanId];
+
+              if (!record || !record.versions || record.versions.length < 2) {
+                return m({
+                  loggingName: "ShowEdit not found",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "No Edit History Found",
+                    description: "No edit history was recorded for message `" + cleanId + "`.\n\n" +
+                                 "*Note: InfernoAuth records edits persistently across app restarts when messages are edited while Discord is active.*"
+                  }]
+                }, n);
+              }
+
+              const authorStr = record.author?.globalName
+                ? record.author.globalName + " (@" + record.author.username + ")"
+                : "@" + (record.author?.username || "Unknown");
+
+              const fields = record.versions.map(function(v, idx) {
+                const title = idx === 0
+                  ? "Original Version"
+                  : "Edit #" + idx + " (" + (v.timeString || "Edited") + ")";
+
+                return {
+                  name: title,
+                  value: "```\n" + (v.content || "(No text content)") + "\n```",
+                  inline: false
+                };
+              });
+
+              return m({
+                loggingName: "ShowEdit results",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: "Message Edit History",
+                  description: "Author: **" + authorStr + "**\nMessage ID: `" + cleanId + "`\nTotal Revisions: **" + record.versions.length + "**",
+                  fields: fields,
+                  footer: { text: "InfernoAuth • MMKV Restart-Persistent History" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "ShowEdit exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /showedit",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /avatar [user] ---
+          async avatar(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/avatar",
+                  user: curUser
+                }
+              };
+
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const targetUserId = optMap.get("user")?.value || curUser?.id;
+
+              let userObj = c.findByStoreName("UserStore")?.getUser?.(targetUserId) || curUser;
+              if (!userObj || !userObj.avatar) {
+                try {
+                  const uRes = await fetch("https://discord.com/api/v9/users/" + targetUserId, {
+                    headers: { "Authorization": getActualCurrentToken() }
+                  });
+                  if (uRes.status === 200) userObj = await uRes.json();
+                } catch(e) {}
+              }
+
+              if (!userObj) {
+                return m({
+                  loggingName: "Avatar not found",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "User Not Found",
+                    description: "Could not find user details for ID: `" + targetUserId + "`"
+                  }]
+                }, n);
+              }
+
+              const isAnim = userObj.avatar && userObj.avatar.startsWith("a_");
+              const ext = isAnim ? "gif" : "png";
+              const avatarBase = userObj.avatar
+                ? "https://cdn.discordapp.com/avatars/" + userObj.id + "/" + userObj.avatar
+                : "https://cdn.discordapp.com/embed/avatars/" + ((userObj.discriminator || 0) % 5);
+
+              const avatarUrl = avatarBase + "." + ext + "?size=4096";
+
+              const links = [
+                "[PNG](" + avatarBase + ".png?size=4096)",
+                "[JPG](" + avatarBase + ".jpg?size=4096)",
+                "[WEBP](" + avatarBase + ".webp?size=4096)"
+              ];
+              if (isAnim) links.push("[GIF](" + avatarBase + ".gif?size=4096)");
+
+              return m({
+                loggingName: "Avatar output",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: (userObj.global_name || userObj.globalName || userObj.username) + "'s Avatar",
+                  description: "Direct Links: " + links.join(" • "),
+                  image: { url: avatarUrl },
+                  footer: { text: "High-Resolution 4096px Asset" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Avatar exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /avatar",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /banner [user] ---
+          async banner(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/banner",
+                  user: curUser
+                }
+              };
+
+              const optMap = new Map(o.map(function(l) { return [l.name, l]; }));
+              const targetUserId = optMap.get("user")?.value || curUser?.id;
+
+              let userObj = null;
+              try {
+                const uRes = await fetch("https://discord.com/api/v9/users/" + targetUserId, {
+                  headers: { "Authorization": getActualCurrentToken() }
+                });
+                if (uRes.status === 200) userObj = await uRes.json();
+              } catch(e) {}
+
+              if (!userObj) userObj = c.findByStoreName("UserStore")?.getUser?.(targetUserId) || curUser;
+
+              if (!userObj) {
+                return m({
+                  loggingName: "Banner not found",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "User Not Found",
+                    description: "Could not find user details for ID: `" + targetUserId + "`"
+                  }]
+                }, n);
+              }
+
+              const nameStr = userObj.global_name || userObj.globalName || userObj.username;
+
+              if (!userObj.banner) {
+                const color = userObj.accent_color || userObj.accentColor;
+                const hexColor = color ? "#" + color.toString(16).padStart(6, "0") : null;
+                return m({
+                  loggingName: "Banner color only",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: color || u(),
+                    type: "rich",
+                    title: nameStr + "'s Banner",
+                    description: hexColor
+                      ? "**No custom image banner.** Accent Color: `" + hexColor + "`"
+                      : "This user does not have a profile banner or accent color set."
+                  }]
+                }, n);
+              }
+
+              const isAnim = userObj.banner.startsWith("a_");
+              const ext = isAnim ? "gif" : "png";
+              const bannerBase = "https://cdn.discordapp.com/banners/" + userObj.id + "/" + userObj.banner;
+              const bannerUrl = bannerBase + "." + ext + "?size=4096";
+
+              const links = [
+                "[PNG](" + bannerBase + ".png?size=4096)",
+                "[JPG](" + bannerBase + ".jpg?size=4096)",
+                "[WEBP](" + bannerBase + ".webp?size=4096)"
+              ];
+              if (isAnim) links.push("[GIF](" + bannerBase + ".gif?size=4096)");
+
+              return m({
+                loggingName: "Banner output",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: nameStr + "'s Banner",
+                  description: "Direct Links: " + links.join(" • "),
+                  image: { url: bannerUrl },
+                  footer: { text: "High-Resolution 4096px Asset" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Banner exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /banner",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
+          // --- /servericon ---
+          servericon(o, t) {
+            try {
+              const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+              const n = {
+                ...p,
+                interaction: {
+                  name: "/servericon",
+                  user: curUser
+                }
+              };
+
+              const guildId = t.channel?.guild_id || t.guild?.id;
+              if (!guildId) {
+                return m({
+                  loggingName: "Servericon not in server",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: 15158332,
+                    type: "rich",
+                    title: "Not in a Server",
+                    description: "This command can only be used inside a server channel."
+                  }]
+                }, n);
+              }
+
+              const GuildStore = c.findByStoreName("GuildStore");
+              const guildObj = GuildStore?.getGuild?.(guildId);
+              const serverName = guildObj?.name || "Server (" + guildId + ")";
+
+              if (!guildObj?.icon) {
+                return m({
+                  loggingName: "Servericon no icon",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: serverName,
+                    description: "This server does not have a custom icon set."
+                  }]
+                }, n);
+              }
+
+              const isAnim = guildObj.icon.startsWith("a_");
+              const ext = isAnim ? "gif" : "png";
+              const iconBase = "https://cdn.discordapp.com/icons/" + guildId + "/" + guildObj.icon;
+              const iconUrl = iconBase + "." + ext + "?size=4096";
+
+              const links = [
+                "[PNG](" + iconBase + ".png?size=4096)",
+                "[JPG](" + iconBase + ".jpg?size=4096)",
+                "[WEBP](" + iconBase + ".webp?size=4096)"
+              ];
+              if (isAnim) links.push("[GIF](" + iconBase + ".gif?size=4096)");
+
+              return m({
+                loggingName: "Servericon output",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: u(),
+                  type: "rich",
+                  title: serverName + " — Icon",
+                  description: "Direct Links: " + links.join(" • "),
+                  image: { url: iconUrl },
+                  footer: { text: "High-Resolution 4096px Asset" }
+                }]
+              }, n);
+
+            } catch(err) {
+              console.error(err);
+              m({
+                loggingName: "Servericon exception",
+                channelId: t.channel.id,
+                embeds: [{
+                  color: 15158332,
+                  type: "rich",
+                  title: "Error in /servericon",
+                  description: err.message
+                }]
+              }, n);
+            }
+          },
+
           // --- /help & /infernohelp ---
           help(o, t) {
             try {
@@ -2199,15 +2931,47 @@
                        "• `/token switch account:<username>` — Switch by Discord username or custom nickname\n\n" +
                        "*Tip: Use `/token account action:list` to see your accounts and numbers.*";
               } else if (cmdChoice === "join") {
-                title = "/token join — Batch Server Joiner";
-                desc = "**Batch joins an invite link across your active account AND all saved alts.**\n\n" +
+                title = "/token join — Server Joiner";
+                desc = "**Join a server using an invite link or code.**\n\n" +
                        "**Usage:**\n" +
-                       "• `/token join invite:discord.gg/yourcode`\n" +
-                       "• `/joinserver invite:yourcode` (Alias)\n\n" +
-                       "**Features:**\n" +
-                       "• Automatically iterates through every account\n" +
-                       "• Built-in 800ms delays to prevent Discord rate limits\n" +
-                       "• Safely reports CAPTCHA flags without crashing";
+                       "• `/token join invite:discord.gg/yourcode` — Join with active account only\n" +
+                       "• `/token join invite:yourcode scopeall:true` — Join across active + all saved alts\n" +
+                       "• `/joinserver` — Alias for /token join";
+              } else if (cmdChoice === "leaveserver") {
+                title = "/leaveserver / /token leave — Leave Server";
+                desc = "**Leaves a server for the active account (or all saved alts).**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/leaveserver` — Leaves the current server (active account only)\n" +
+                       "• `/leaveserver server:<id>` — Leaves specific server by ID\n" +
+                       "• `/leaveserver scopeall:true` — Leaves across active + all saved alts";
+              } else if (cmdChoice === "leaveallserver") {
+                title = "/leaveallserver — Mass Server Leaver";
+                desc = "**Leaves ALL joined servers for the active account with confirmation safety.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/leaveallserver` — Prompts safety confirmation\n" +
+                       "• `/leaveallserver confirm:yes` — Confirms and starts sequential leave (owned servers protected)";
+              } else if (cmdChoice === "showedit") {
+                title = "/showedit — Persistent Edit History";
+                desc = "**View the full revision history of any edited message (survives app restarts).**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/showedit msgid:<message_id>`";
+              } else if (cmdChoice === "avatar") {
+                title = "/avatar — High-Res Avatar Grabber";
+                desc = "**Extracts 4096px original avatar (PNG/GIF/WebP) with direct download links.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/avatar` — View your own avatar\n" +
+                       "• `/avatar user:@someone` — View another user's avatar";
+              } else if (cmdChoice === "banner") {
+                title = "/banner — Profile Banner Grabber";
+                desc = "**Extracts 4096px original banner image or displays profile accent color.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/banner` — View your own banner\n" +
+                       "• `/banner user:@someone` — View another user's banner";
+              } else if (cmdChoice === "servericon") {
+                title = "/servericon — Server Icon & Assets";
+                desc = "**Extracts 4096px original server icon with direct download links.**\n\n" +
+                       "**Usage:**\n" +
+                       "• `/servericon` (run inside any server)";
               } else if (cmdChoice === "login") {
                 title = "/token login — Direct Token Login";
                 desc = "**Log in with a Discord account token directly.**\n\n" +
@@ -2244,15 +3008,20 @@
               } else {
                 desc = "**InfernoAuth** by **Inferno Devs** — The ultimate Discord power suite.\n\n" +
                        "**Account Management:**\n" +
-                       "• `/token account` — Save, list, or remove alt accounts\n" +
+                       "• `/token account` — Save (`action:save name:<nick>`), list, or remove alts\n" +
                        "• `/token switch` — Jump between alts by `#1`, `#2`, or nickname\n" +
                        "• `/token login` — Direct instant token login\n" +
-                       "• `/token logout` — Safely end active session\n" +
-                       "• `/token get` — View & copy active token\n\n" +
-                       "**Automation & Utilities:**\n" +
-                       "• `/token join` / `/joinserver` — Batch join server across all accounts\n" +
-                       "• `/appauthorize` — Batch OAuth2 bot authorizer\n" +
-                       "• `/deleted` / `/deletedmessages` — Real-time deleted message viewer\n" +
+                       "• `/token logout` / `/logout` — Safe logout without token reset\n" +
+                       "• `/token get` / `/gettoken` — View & copy active token\n\n" +
+                       "**Server & Join Utilities:**\n" +
+                       "• `/token join` / `/joinserver` — Join server (`scopeall:true` for all alts)\n" +
+                       "• `/leaveserver` / `/token leave` — Leave server (`scopeall:true` for all alts)\n" +
+                       "• `/leaveallserver` — Mass leave all servers (with confirmation)\n" +
+                       "• `/appauthorize` — Batch OAuth2 bot authorizer\n\n" +
+                       "**Chat, Media & Intelligence:**\n" +
+                       "• `/deleted` / `/deletedmessages` — Real-time deleted message logger\n" +
+                       "• `/showedit` — Persistent message edit history\n" +
+                       "• `/avatar`, `/banner`, `/servericon` — 4096px asset grabbers\n" +
                        "• `/help` / `/infernohelp` — View this interactive guide\n\n" +
                        "*Select a command in `/help command:<choice>` for detailed parameter guide.*";
               }
@@ -2373,13 +3142,19 @@
             applicationId: "-1",
             execute: r.join,
             name: "token join",
-            description: "Batch join a server across all your saved alts + active account",
+            description: "Join server (scopeall:true for active + alts, false for active only)",
             options: [
               {
                 required: true,
                 type: 3,
                 name: "invite",
                 description: "Discord invite link or code (e.g. discord.gg/code)"
+              },
+              {
+                required: false,
+                type: 5,
+                name: "scopeall",
+                description: "Join across ALL saved accounts (true) or active account only (false, default)"
               }
             ]
           }),
@@ -2389,15 +3164,141 @@
             applicationId: "-1",
             execute: r.join,
             name: "joinserver",
-            description: "Alias for /token join: Batch join a server across all accounts",
+            description: "Alias for /token join: Join server (scopeall:true for active + alts)",
             options: [
               {
                 required: true,
                 type: 3,
                 name: "invite",
                 description: "Discord invite link or code"
+              },
+              {
+                required: false,
+                type: 5,
+                name: "scopeall",
+                description: "Join across ALL saved accounts (true) or active account only (false, default)"
               }
             ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.leaveserver,
+            name: "leaveserver",
+            description: "Leave a server (scopeall:true for active + alts, false for active only)",
+            options: [
+              {
+                required: false,
+                type: 3,
+                name: "server",
+                description: "Guild ID to leave (optional, defaults to current server)"
+              },
+              {
+                required: false,
+                type: 5,
+                name: "scopeall",
+                description: "Leave across ALL saved accounts (true) or active account only (false, default)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.leaveserver,
+            name: "token leave",
+            description: "Alias for /leaveserver: Leave server (scopeall:true for active + alts)",
+            options: [
+              {
+                required: false,
+                type: 3,
+                name: "server",
+                description: "Guild ID to leave (optional, defaults to current server)"
+              },
+              {
+                required: false,
+                type: 5,
+                name: "scopeall",
+                description: "Leave across ALL saved accounts (true) or active account only (false, default)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.leaveallserver,
+            name: "leaveallserver",
+            description: "Leaves ALL joined servers on active account (requires confirmation)",
+            options: [
+              {
+                required: false,
+                type: 3,
+                name: "confirm",
+                description: "Type 'yes' to confirm leaving all servers",
+                choices: [
+                  { name: "yes (Confirm leaving all servers)", value: "yes" },
+                  { name: "no (Cancel)", value: "no" }
+                ]
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.showedit,
+            name: "showedit",
+            description: "View persistent revision edit history of any edited message",
+            options: [
+              {
+                required: true,
+                type: 3,
+                name: "msgid",
+                description: "Message ID to inspect edit history"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.avatar,
+            name: "avatar",
+            description: "Extract high-resolution 4096px original avatar (PNG/GIF/WebP)",
+            options: [
+              {
+                required: false,
+                type: 6,
+                name: "user",
+                description: "Select user (optional, defaults to yourself)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.banner,
+            name: "banner",
+            description: "Extract high-resolution 4096px profile banner or accent color",
+            options: [
+              {
+                required: false,
+                type: 6,
+                name: "user",
+                description: "Select user (optional, defaults to yourself)"
+              }
+            ]
+          }),
+          y({
+            type: 1,
+            inputType: 1,
+            applicationId: "-1",
+            execute: r.servericon,
+            name: "servericon",
+            description: "Extract high-resolution 4096px server icon and banner"
           }),
           y({
             type: 1,
@@ -2506,7 +3407,13 @@
                   { name: "all (Overview of all commands)", value: "all" },
                   { name: "/token account (Multi-account manager)", value: "account" },
                   { name: "/token switch (Fast account switcher)", value: "switch" },
-                  { name: "/token join (Batch server invite joiner)", value: "join" },
+                  { name: "/token join (Server joiner - active or alts)", value: "join" },
+                  { name: "/leaveserver (Leave server - active or alts)", value: "leaveserver" },
+                  { name: "/leaveallserver (Mass leave all servers)", value: "leaveallserver" },
+                  { name: "/showedit (Persistent message edit history)", value: "showedit" },
+                  { name: "/avatar (High-res 4096px avatar grabber)", value: "avatar" },
+                  { name: "/banner (High-res 4096px banner grabber)", value: "banner" },
+                  { name: "/servericon (High-res 4096px server icon)", value: "servericon" },
                   { name: "/token login (Direct token login)", value: "login" },
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
@@ -2533,7 +3440,13 @@
                   { name: "all (Overview of all commands)", value: "all" },
                   { name: "/token account (Multi-account manager)", value: "account" },
                   { name: "/token switch (Fast account switcher)", value: "switch" },
-                  { name: "/token join (Batch server invite joiner)", value: "join" },
+                  { name: "/token join (Server joiner - active or alts)", value: "join" },
+                  { name: "/leaveserver (Leave server - active or alts)", value: "leaveserver" },
+                  { name: "/leaveallserver (Mass leave all servers)", value: "leaveallserver" },
+                  { name: "/showedit (Persistent message edit history)", value: "showedit" },
+                  { name: "/avatar (High-res 4096px avatar grabber)", value: "avatar" },
+                  { name: "/banner (High-res 4096px banner grabber)", value: "banner" },
+                  { name: "/servericon (High-res 4096px server icon)", value: "servericon" },
                   { name: "/token login (Direct token login)", value: "login" },
                   { name: "/token logout (Safe session logout)", value: "logout" },
                   { name: "/token get (Retrieve active token)", value: "get" },
