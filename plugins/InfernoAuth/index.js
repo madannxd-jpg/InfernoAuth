@@ -2322,6 +2322,160 @@
                 }, n);
               }
 
+              if (action === "checkall" || action === "check") {
+                const accounts = getSavedAccounts();
+                const curUser = c.findByStoreName("UserStore")?.getCurrentUser?.();
+
+                if (accounts.length === 0) {
+                  return m({
+                    loggingName: "Account checkall empty",
+                    channelId: t.channel.id,
+                    embeds: [{
+                      color: u(),
+                      type: "rich",
+                      title: "ℹ️ No Saved Accounts Found",
+                      description: "There are no saved accounts in storage to check.\nUse `/token account action:add` or `/token account action:save` to add accounts."
+                    }]
+                  }, n);
+                }
+
+                m({
+                  loggingName: "Account checkall progress",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: u(),
+                    type: "rich",
+                    title: "<" + w.getLoading() + "> Checking All Tokens...",
+                    description: "Verifying **" + accounts.length + "** saved account token(s) against Discord API..."
+                  }]
+                }, n);
+
+                C?.showToast?.("⚡ Checking " + accounts.length + " tokens...");
+
+                let superProps = null;
+                try {
+                  const spMod = c.findByProps("getSuperPropertiesBase64");
+                  if (spMod?.getSuperPropertiesBase64) superProps = spMod.getSuperPropertiesBase64();
+                } catch(e) {}
+
+                const validAccounts = [];
+                const removedAccounts = [];
+
+                // Check all accounts concurrently in parallel
+                await Promise.all(accounts.map(async function(acc) {
+                  if (!acc.token || typeof acc.token !== "string" || acc.token.trim().length < 30) {
+                    removedAccounts.push({
+                      name: acc.name ? acc.name + " (@" + (acc.username || "unknown") + ")" : "@" + (acc.username || "unknown"),
+                      reason: "Invalid format"
+                    });
+                    return;
+                  }
+
+                  const cleanToken = acc.token.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+                  const headers = {
+                    "Authorization": cleanToken,
+                    "Content-Type": "application/json",
+                    "Accept": "*/*"
+                  };
+                  if (superProps) headers["X-Super-Properties"] = superProps;
+
+                  try {
+                    const res = await fetch("https://discord.com/api/v9/users/@me", {
+                      headers: headers
+                    });
+
+                    if (res.status === 200) {
+                      const freshUser = await res.json().catch(function() { return null; });
+                      if (freshUser && freshUser.id) {
+                        validAccounts.push({
+                          ...acc,
+                          id: freshUser.id,
+                          username: freshUser.username,
+                          globalName: freshUser.global_name || freshUser.username,
+                          avatar: freshUser.avatar,
+                          token: cleanToken
+                        });
+                        return;
+                      }
+                    }
+
+                    if (res.status === 401) {
+                      removedAccounts.push({
+                        name: acc.name ? acc.name + " (@" + acc.username + ")" : "@" + acc.username,
+                        reason: "Expired / Invalid token (401)"
+                      });
+                      return;
+                    }
+
+                    if (res.status === 403) {
+                      removedAccounts.push({
+                        name: acc.name ? acc.name + " (@" + acc.username + ")" : "@" + acc.username,
+                        reason: "Account locked / banned (403)"
+                      });
+                      return;
+                    }
+
+                    // On rate limit (429) or temporary Discord server 5xx error, do not delete
+                    if (res.status === 429 || res.status >= 500) {
+                      validAccounts.push(acc);
+                      return;
+                    }
+
+                    removedAccounts.push({
+                      name: acc.name ? acc.name + " (@" + acc.username + ")" : "@" + acc.username,
+                      reason: "HTTP " + res.status
+                    });
+                  } catch(err) {
+                    // On local network error, keep account safe
+                    validAccounts.push(acc);
+                  }
+                }));
+
+                // Reorder and update storage with only valid accounts
+                const st = getStorage();
+                st.savedAccounts = validAccounts;
+
+                C?.showToast?.("Token check complete! " + validAccounts.length + " valid, " + removedAccounts.length + " removed.");
+
+                let desc = "**Token Verification Summary:**\n" +
+                           "• Total Checked: **" + accounts.length + "**\n" +
+                           "• ✅ Valid & Active: **" + validAccounts.length + "**\n" +
+                           "• ❌ Removed (Invalid/Expired): **" + removedAccounts.length + "**\n\n";
+
+                if (removedAccounts.length > 0) {
+                  desc += "**🗑️ Removed Accounts (" + removedAccounts.length + "):**\n";
+                  removedAccounts.forEach(function(r) {
+                    desc += "• " + r.name + ": *" + r.reason + "*\n";
+                  });
+                  desc += "\n";
+                }
+
+                if (validAccounts.length > 0) {
+                  desc += "**📋 Updated & Reordered Accounts (" + validAccounts.length + "):**\n";
+                  validAccounts.forEach(function(acc, idx) {
+                    const num = idx + 1;
+                    const isCurrent = curUser && (curUser.id === acc.id || curUser.username === acc.username);
+                    const activeBadge = isCurrent ? "  *(Active)*" : "";
+                    const displayName = acc.name ? "**" + acc.name + "** (`@" + acc.username + "`)" : "**@" + acc.username + "**";
+                    desc += "`[#" + num + "]` " + displayName + activeBadge + " — `/token switch account:" + num + "`\n";
+                  });
+                } else {
+                  desc += "*No valid accounts remaining in storage.*";
+                }
+
+                return m({
+                  loggingName: "Account checkall complete",
+                  channelId: t.channel.id,
+                  embeds: [{
+                    color: removedAccounts.length === 0 ? 0x57f287 : 0xfee75c,
+                    type: "rich",
+                    title: "🔍 Token Check & Cleanup Completed",
+                    description: desc.trim(),
+                    footer: { text: "InfernoAuth Multi-Account Manager • Reordered" }
+                  }]
+                }, n);
+              }
+
             } catch(err) {
               console.error(err);
               m({
@@ -4167,7 +4321,7 @@
                        "• `/token account action:save name:<nickname>` — One-click save current active account with a custom nickname\n" +
                        "• `/token account action:add token:<token> name:<nickname>` — Save a new alt by pasting its token\n" +
                        "• `/token account action:remove target:<#1 / name>` — Remove an account from storage\n" +
-                       "• `/token account action:clear` — Clear all saved accounts";
+                       "• `/token account action:clear` — Clear all saved accounts\n• `/token account action:checkall` — Check all saved tokens, remove invalid/expired ones & reorder list";
               } else if (cmdChoice === "switch") {
                 title = "/token switch — Fast Alt Switcher";
                 desc = "**Instantly switch active session to any saved account.**\n\n" +
@@ -4412,7 +4566,8 @@
                   { name: "save (Save current active account with custom nickname)", value: "save" },
                   { name: "add (Save a new alt by pasting its token)", value: "add" },
                   { name: "remove (Delete an account from storage)", value: "remove" },
-                  { name: "clear (Delete all saved accounts)", value: "clear" }
+                  { name: "clear (Delete all saved accounts)", value: "clear" },
+                  { name: "checkall (Check all tokens, remove invalid & reorder list)", value: "checkall" }
                 ]
               },
               {

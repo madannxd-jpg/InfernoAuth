@@ -1,6 +1,6 @@
 {
   "name": "InfernoAuth",
-  "description": "All-in-one suite: /tokenlogin with Anti-Flag Stealth & Clean Session Reboot, /joinserver & /token join with Parallel Multi-Account Join & Auto-Onboarding, /sendmsg with multi-count & parallel dispatch, Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
+  "description": "All-in-one suite: /token account action:checkall (Token Validator & Reorder), /tokenlogin with Anti-Flag Stealth, /joinserver with Parallel Multi-Account Join & Auto-Onboard, /sendmsg with multi-count, Universal Background & Frosted Glass, Multi-account manager, /leaveserver, /leaveallserver, /showedit, 4096px asset grabbers, /deleted logger, and /help guide.",
   "authors": [
     {
       "name": "Inferno Devs"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "ic_full_server_gating_24px"
   },
-  "hash": "7a9b7949f32e117ed5ad5c4f4cfcb1176b61067c9685d60b1fdfbdab7340cb54"
+  "hash": "3df2b8c8460604c99745183e03356f9716de4c02fd396fa72cdbcc0eecbbba2a"
 }
